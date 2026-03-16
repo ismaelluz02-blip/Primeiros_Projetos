@@ -863,11 +863,12 @@ def _linha_parece_cabecalho_planilha(row_vals):
 def _identificar_secao_planilha(row_vals):
     texto = normalizar_texto(" ".join(str(v) for v in row_vals))
     # Considera secao apenas na linha de titulo do bloco: "C.T.R.C. - janeiro / 26" ou "N.F. - janeiro / 26".
-    if not (("-" in texto) and ("/" in texto)):
+    # Aceita variacoes com/sem ponto final e com hifen simples ou longo.
+    if not (("/" in texto) and (("-" in texto) or ("–" in texto))):
         return None
-    if re.search(r"\bC\s*\.?\s*T\s*\.?\s*R\s*\.?\s*C\b\s*-\s*[A-Z ]+\s*/\s*\d{2,4}", texto):
+    if re.search(r"\bC\s*\.?\s*T\s*\.?\s*R\s*\.?\s*C\s*\.?\s*[-–]\s*[A-Z ]+\s*/\s*\d{2,4}", texto):
         return "CTE"
-    if re.search(r"\bN\s*\.?\s*F\b\s*-\s*[A-Z ]+\s*/\s*\d{2,4}", texto):
+    if re.search(r"\bN\s*\.?\s*F\s*\.?\s*[-–]\s*[A-Z ]+\s*/\s*\d{2,4}", texto):
         return "NF"
     return None
 
