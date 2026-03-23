@@ -1,4 +1,4 @@
-﻿# NOVO_PROJETO
+﻿# AUTOMACAO_DE_REQUISICAO
 
 App desktop para automatizar o fluxo de requisicao no Visual Rodopar com 2 monitores.
 
@@ -50,3 +50,4 @@ Se a imagem nao for encontrada, ele pode usar fallback em XY do ultimo treino.
 
 - Use o botao `Parar` para interromper a execucao.
 - Caso a UI do sistema mude muito (tema, tamanho, escala), refaca o treino dos templates.
+

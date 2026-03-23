@@ -75,7 +75,7 @@ class RequisicaoApp:
             "muted_hover": "#8796a8",
         }
 
-        self.root.title("Automacao Requisicao - Visual Rodopar")
+        self.root.title("Automacao de Requisicao - Visual Rodopar")
         self.root.geometry("500x300")
         self.root.minsize(460, 260)
         self.root.resizable(True, True)
@@ -1194,3 +1194,4 @@ def run_gui() -> None:
     config_path = project_root / "config" / "requisicao_config.json"
     app = RequisicaoApp(root, ConfigStore(config_path), project_root)
     root.mainloop()
+
