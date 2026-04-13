@@ -79,10 +79,13 @@ FALLBACK_APP_DATA_DIR = os.path.join(BASE_DIR, "_dados_app")
 def _diretorio_gravavel(caminho_dir):
     try:
         os.makedirs(caminho_dir, exist_ok=True)
-        arquivo_teste = os.path.join(caminho_dir, ".write_test.tmp")
+        arquivo_teste = os.path.join(caminho_dir, f".write_test_{os.getpid()}_{time.time_ns()}.tmp")
         with open(arquivo_teste, "w", encoding="utf-8") as f:
             f.write("ok")
-        os.remove(arquivo_teste)
+        try:
+            os.remove(arquivo_teste)
+        except OSError:
+            pass
         return True
     except OSError:
         return False
@@ -118,6 +121,15 @@ def configurar_diretorio_dados():
 configurar_diretorio_dados()
 
 
+def configurar_cache_matplotlib():
+    cache_dir = os.path.join(APP_DATA_DIR, "matplotlib")
+    if _diretorio_gravavel(cache_dir):
+        os.environ["MPLCONFIGDIR"] = cache_dir
+
+
+configurar_cache_matplotlib()
+
+
 def _processo_ativo(pid):
     try:
         os.kill(pid, 0)
@@ -144,26 +156,40 @@ def preparar_arquivos_aplicacao():
         except Exception:
             return None
 
-    # Migra automaticamente o banco legado da pasta do executavel
-    # para a pasta de dados do usuario na primeira execucao.
+    fontes_banco = []
+    for origem in (
+        os.path.join(DEFAULT_APP_DATA_DIR, "faturamento.db"),
+        LEGACY_DB_PATH,
+    ):
+        origem_abs = os.path.abspath(origem)
+        if origem_abs == os.path.abspath(DB_PATH):
+            continue
+        if origem_abs not in fontes_banco:
+            fontes_banco.append(origem_abs)
+
+    # Migra automaticamente um banco saudável para a pasta atual na primeira execução
+    # ou quando o fallback local estiver vazio.
     if not os.path.exists(DB_PATH):
-        if os.path.exists(LEGACY_DB_PATH):
+        for origem_db in fontes_banco:
+            if not os.path.exists(origem_db):
+                continue
             try:
-                shutil.copy2(LEGACY_DB_PATH, DB_PATH)
+                shutil.copy2(origem_db, DB_PATH)
+                break
             except OSError:
-                pass
+                continue
         return
 
-    # Se o banco novo existir mas estiver vazio e o legado possuir dados,
-    # reaproveita o legado para evitar "sumir" com historico em atualizacoes.
-    if os.path.exists(LEGACY_DB_PATH):
-        docs_novo = _contar_documentos(DB_PATH)
-        docs_legado = _contar_documentos(LEGACY_DB_PATH)
-        if docs_novo == 0 and isinstance(docs_legado, int) and docs_legado > 0:
-            try:
-                shutil.copy2(LEGACY_DB_PATH, DB_PATH)
-            except OSError:
-                pass
+    docs_novo = _contar_documentos(DB_PATH)
+    if docs_novo == 0:
+        for origem_db in fontes_banco:
+            docs_origem = _contar_documentos(origem_db)
+            if isinstance(docs_origem, int) and docs_origem > 0:
+                try:
+                    shutil.copy2(origem_db, DB_PATH)
+                    break
+                except OSError:
+                    continue
 
 
 def adquirir_lock_instancia():
@@ -223,12 +249,110 @@ def alertar_instancia_em_execucao(pid_existente=None):
 # ------------------------
 
 
+def _sqlite_db_valido(caminho_db):
+    if not caminho_db or not os.path.exists(caminho_db):
+        return True
+    try:
+        conn = sqlite3.connect(caminho_db)
+        cursor = conn.cursor()
+        cursor.execute("PRAGMA quick_check")
+        row = cursor.fetchone()
+        conn.close()
+        return bool(row) and str(row[0]).strip().lower() == "ok"
+    except sqlite3.Error:
+        return False
+
+
+def _candidatos_recuperacao_banco():
+    caminhos = []
+    vistos = set()
+    for caminho in (
+        os.path.join(DEFAULT_APP_DATA_DIR, "faturamento.db"),
+        os.path.join(FALLBACK_APP_DATA_DIR, "faturamento.db"),
+        LEGACY_DB_PATH,
+        os.path.join(BASE_DIR, "faturamento.db"),
+    ):
+        caminho_abs = os.path.abspath(caminho)
+        if caminho_abs in vistos or caminho_abs == os.path.abspath(DB_PATH):
+            continue
+        vistos.add(caminho_abs)
+        caminhos.append(caminho_abs)
+    return caminhos
+
+
+def _tentar_recuperar_banco():
+    journal_path = f"{DB_PATH}-journal"
+    try:
+        if os.path.exists(journal_path):
+            os.remove(journal_path)
+    except OSError:
+        pass
+
+    if _sqlite_db_valido(DB_PATH):
+        return True
+
+    for candidato in _candidatos_recuperacao_banco():
+        if not os.path.exists(candidato):
+            continue
+        if not _sqlite_db_valido(candidato):
+            continue
+        try:
+            os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+            if os.path.exists(DB_PATH):
+                backup_path = f"{DB_PATH}.corrompido.bak"
+                try:
+                    if os.path.exists(backup_path):
+                        os.remove(backup_path)
+                except OSError:
+                    pass
+                try:
+                    os.replace(DB_PATH, backup_path)
+                except OSError:
+                    pass
+            shutil.copy2(candidato, DB_PATH)
+            try:
+                if os.path.exists(journal_path):
+                    os.remove(journal_path)
+            except OSError:
+                pass
+            if _sqlite_db_valido(DB_PATH):
+                return True
+        except OSError:
+            continue
+
+    if os.path.exists(DB_PATH):
+        backup_path = f"{DB_PATH}.corrompido.bak"
+        try:
+            if os.path.exists(backup_path):
+                os.remove(backup_path)
+        except OSError:
+            pass
+        try:
+            os.replace(DB_PATH, backup_path)
+        except OSError:
+            pass
+    try:
+        if os.path.exists(journal_path):
+            os.remove(journal_path)
+    except OSError:
+        pass
+    return True
+
+
 def obter_conexao_banco():
-    return sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH)
+    try:
+        cursor = conn.cursor()
+        cursor.execute("PRAGMA journal_mode=MEMORY")
+        cursor.execute("PRAGMA temp_store=MEMORY")
+    except sqlite3.Error:
+        pass
+    return conn
 
 
 def obter_configuracao(chave, padrao=""):
     conn = obter_conexao_banco()
+    conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
     cursor.execute("SELECT valor FROM configuracoes WHERE chave=?", (chave,))
     row = cursor.fetchone()
@@ -254,59 +378,101 @@ def salvar_configuracao(chave, valor):
 
 
 def iniciar_banco():
-    conn = obter_conexao_banco()
-    cursor = conn.cursor()
+    ultima_exc = None
+    for tentativa in range(2):
+        conn = None
+        try:
+            conn = obter_conexao_banco()
+            cursor = conn.cursor()
 
-    cursor.execute(
-        """
-        CREATE TABLE IF NOT EXISTS documentos (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            numero INTEGER,
-            numero_original TEXT,
-            tipo TEXT,
-            data_emissao TEXT,
-            valor_inicial REAL,
-            valor_final REAL,
-            frete TEXT,
-            status TEXT,
-            competencia TEXT
-        )
-        """
-    )
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS documentos (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    numero INTEGER,
+                    numero_original TEXT,
+                    tipo TEXT,
+                    data_emissao TEXT,
+                    valor_inicial REAL,
+                    valor_final REAL,
+                    frete TEXT,
+                    status TEXT,
+                    competencia TEXT
+                )
+                """
+            )
 
-    cursor.execute(
-        """
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_documentos_numero_tipo
-        ON documentos (numero, tipo)
-        """
-    )
-    cursor.execute(
-        """
-        CREATE TABLE IF NOT EXISTS configuracoes (
-            chave TEXT PRIMARY KEY,
-            valor TEXT
-        )
-        """
-    )
+            cursor.execute(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_documentos_numero_tipo
+                ON documentos (numero, tipo)
+                """
+            )
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS configuracoes (
+                    chave TEXT PRIMARY KEY,
+                    valor TEXT
+                )
+                """
+            )
 
-    colunas_existentes = {linha[1] for linha in cursor.execute("PRAGMA table_info(documentos)").fetchall()}
-    if "valor_inicial_original" not in colunas_existentes:
-        cursor.execute("ALTER TABLE documentos ADD COLUMN valor_inicial_original REAL")
-    if "valor_final_original" not in colunas_existentes:
-        cursor.execute("ALTER TABLE documentos ADD COLUMN valor_final_original REAL")
-    if "status_original" not in colunas_existentes:
-        cursor.execute("ALTER TABLE documentos ADD COLUMN status_original TEXT")
-    if "cancelado_manual" not in colunas_existentes:
-        cursor.execute("ALTER TABLE documentos ADD COLUMN cancelado_manual INTEGER DEFAULT 0")
-    if "competencia_manual" not in colunas_existentes:
-        cursor.execute("ALTER TABLE documentos ADD COLUMN competencia_manual INTEGER DEFAULT 0")
-    if "frete_manual" not in colunas_existentes:
-        cursor.execute("ALTER TABLE documentos ADD COLUMN frete_manual INTEGER DEFAULT 0")
-    if "frete_revisado_manual" not in colunas_existentes:
-        cursor.execute("ALTER TABLE documentos ADD COLUMN frete_revisado_manual INTEGER DEFAULT 0")
+            colunas_existentes = {linha[1] for linha in cursor.execute("PRAGMA table_info(documentos)").fetchall()}
+            if "valor_inicial_original" not in colunas_existentes:
+                cursor.execute("ALTER TABLE documentos ADD COLUMN valor_inicial_original REAL")
+            if "valor_final_original" not in colunas_existentes:
+                cursor.execute("ALTER TABLE documentos ADD COLUMN valor_final_original REAL")
+            if "status_original" not in colunas_existentes:
+                cursor.execute("ALTER TABLE documentos ADD COLUMN status_original TEXT")
+            if "cancelado_manual" not in colunas_existentes:
+                cursor.execute("ALTER TABLE documentos ADD COLUMN cancelado_manual INTEGER DEFAULT 0")
+            if "competencia_manual" not in colunas_existentes:
+                cursor.execute("ALTER TABLE documentos ADD COLUMN competencia_manual INTEGER DEFAULT 0")
+            if "frete_manual" not in colunas_existentes:
+                cursor.execute("ALTER TABLE documentos ADD COLUMN frete_manual INTEGER DEFAULT 0")
+            if "frete_revisado_manual" not in colunas_existentes:
+                cursor.execute("ALTER TABLE documentos ADD COLUMN frete_revisado_manual INTEGER DEFAULT 0")
 
-    conn.commit()
-    conn.close()
+            cursor.execute(
+                """
+                SELECT id, numero, numero_original, data_emissao
+                FROM documentos
+                WHERE UPPER(COALESCE(tipo, ''))='NF'
+                """
+            )
+            ajustes_numero_original = []
+            for doc_id, numero_doc, numero_original_doc, data_emissao_doc in cursor.fetchall():
+                numero_corrigido = _normalizar_numero_original_nf(
+                    numero_doc,
+                    numero_original_doc,
+                    data_emissao_doc,
+                )
+                numero_atual = str(numero_original_doc or "").strip()
+                if numero_corrigido and numero_corrigido != numero_atual:
+                    ajustes_numero_original.append((numero_corrigido, int(doc_id)))
+
+            if ajustes_numero_original:
+                cursor.executemany(
+                    "UPDATE documentos SET numero_original=? WHERE id=?",
+                    ajustes_numero_original,
+                )
+
+            conn.commit()
+            conn.close()
+            return
+        except sqlite3.Error as exc:
+            ultima_exc = exc
+            try:
+                if conn is not None:
+                    conn.close()
+            except Exception:
+                pass
+            if tentativa == 0 and _tentar_recuperar_banco():
+                continue
+            raise
+
+    if ultima_exc:
+        raise ultima_exc
 
 
 # ------------------------
@@ -395,6 +561,87 @@ def parse_valor_monetario(valor_str):
 def normalizar_texto(texto):
     sem_acentos = unicodedata.normalize("NFKD", texto).encode("ASCII", "ignore").decode("ASCII")
     return sem_acentos.upper()
+
+
+def _numero_para_texto(numero):
+    if numero in (None, ""):
+        return ""
+
+    if isinstance(numero, float):
+        return str(int(numero)) if numero.is_integer() else str(numero)
+
+    numero_txt = str(numero).strip()
+    if not numero_txt:
+        return ""
+
+    if re.fullmatch(r"-?\d+\.0+", numero_txt):
+        try:
+            return str(int(float(numero_txt)))
+        except ValueError:
+            return numero_txt
+
+    return numero_txt
+
+
+def _extrair_ano_data_emissao(data_emissao):
+    if isinstance(data_emissao, datetime):
+        return int(data_emissao.year)
+
+    data_txt = str(data_emissao or "").strip()
+    if not data_txt:
+        return None
+
+    for formato in ("%d/%m/%Y", "%Y-%m-%d", "%Y-%m-%d %H:%M:%S"):
+        try:
+            return datetime.strptime(data_txt, formato).year
+        except ValueError:
+            continue
+    return None
+
+
+def _normalizar_numero_original_nf(numero, numero_original="", data_emissao=""):
+    numero_txt = re.sub(r"\D", "", _numero_para_texto(numero))
+    numero_original_txt = re.sub(r"\D", "", str(numero_original or "").strip())
+
+    numero_legado_txt = ""
+    ano_data = _extrair_ano_data_emissao(data_emissao)
+    if numero_txt:
+        if ano_data and numero_txt.startswith(str(ano_data)) and 0 < len(numero_txt[4:]) <= 4:
+            numero_legado_txt = numero_txt[4:]
+        elif len(numero_txt) == 8 and numero_txt.startswith("20"):
+            numero_legado_txt = numero_txt[4:]
+
+    numero_legado_txt = str(int(numero_legado_txt)) if numero_legado_txt else ""
+
+    if numero_original_txt:
+        if numero_legado_txt and numero_original_txt == numero_txt:
+            return numero_legado_txt
+        return str(int(numero_original_txt)) if numero_original_txt.isdigit() else numero_original_txt
+
+    if numero_legado_txt:
+        return numero_legado_txt
+
+    if numero_txt:
+        return str(int(numero_txt)) if numero_txt.isdigit() else numero_txt
+
+    return ""
+
+
+def _numero_documento_exibicao(tipo, numero, numero_original="", data_emissao=""):
+    tipo_norm = str(tipo or "").upper().strip()
+    if tipo_norm == "NF":
+        return _normalizar_numero_original_nf(numero, numero_original, data_emissao)
+    return _numero_para_texto(numero)
+
+
+def _chave_documento_compativel(tipo, numero, numero_original=""):
+    tipo_norm = str(tipo or "").upper().strip() or "DOC"
+    if tipo_norm == "NF":
+        numero_match_txt, numero_match_int = _coletar_numero_original_para_match(numero_original, numero)
+        numero_txt = str(numero_match_int) if numero_match_int is not None else numero_match_txt
+    else:
+        numero_txt = _numero_para_texto(numero)
+    return f"{tipo_norm}:{numero_txt or 'SEMNUM'}"
 
 
 def competencia_por_data(data):
@@ -1150,7 +1397,7 @@ def _extrair_docs_pagina_relatorio(texto_pagina, competencia_atual=None):
 
                 if data and valor is not None:
                     if tipo == "NF":
-                        numero = int(f"{data.year}{codigo:04d}")
+                        numero = codigo
                         valor_final = valor * 0.95
                     else:
                         numero = codigo
@@ -1158,7 +1405,7 @@ def _extrair_docs_pagina_relatorio(texto_pagina, competencia_atual=None):
 
                     docs.append({
                         "numero": numero,
-                        "numero_original": codigo,
+                        "numero_original": linha.strip(),
                         "tipo": "NF" if tipo == "NF" else "CTE",
                         "data": data,
                         "valor_inicial": valor,
@@ -1653,6 +1900,7 @@ def importar_relatorio_planilha(caminho_planilha):
     vistos = {}
 
     conn = obter_conexao_banco()
+    conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
 
     erros = []
@@ -1717,7 +1965,7 @@ def importar_relatorio_planilha(caminho_planilha):
                 valor_inicial = float(valor)
 
             if tipo == "NF":
-                numero = int(f"{data.year}{int(numero_txt):04d}")
+                numero = int(numero_txt)
                 valor_final = round(valor_inicial * 0.95, 2) if valor_inicial > 0 else 0.0
             else:
                 numero = int(numero_txt)
@@ -1896,7 +2144,7 @@ def _documento_possui_alteracao_manual(row):
         or int(row.get("competencia_manual", 0) or 0) == 1
         or int(row.get("frete_manual", 0) or 0) == 1
         or int(row.get("frete_revisado_manual", 0) or 0) == 1
-        or frete_upper in {"INTERCOMPANY", "DELTA"}
+        or frete_upper in {"INTERCOMPANY", "DELTA", "SPOT"}
         or bool(row.get("valor_inicial_original") is not None)
         or bool(row.get("valor_final_original") is not None)
         or bool((row.get("status_original") or "").strip())
@@ -1981,12 +2229,8 @@ def _extrair_documentos_payload_sync(payload):
     return documentos, metadata
 
 
-def _coletar_numero_original_para_match(numero_original, numero):
-    numero_original_txt = str(numero_original or "").strip()
-    if numero_original_txt:
-        numero_original_txt = re.sub(r"\D", "", numero_original_txt) or numero_original_txt
-    if not numero_original_txt:
-        numero_original_txt = str(numero)
+def _coletar_numero_original_para_match(numero_original, numero, data_emissao=""):
+    numero_original_txt = _normalizar_numero_original_nf(numero, numero_original, data_emissao)
     try:
         numero_original_int = int(re.sub(r"\D", "", numero_original_txt))
     except ValueError:
@@ -2181,7 +2425,7 @@ def importar_configuracoes_json(caminho_arquivo):
             )
             frete_revisado_manual = _to_manual_flag(
                 item.get("frete_revisado_manual"),
-                existente.get("frete_revisado_manual", 0) if existente else (1 if (frete_manual == 1 or frete in {"INTERCOMPANY", "DELTA"}) else 0),
+                existente.get("frete_revisado_manual", 0) if existente else (1 if (frete_manual == 1 or frete in {"INTERCOMPANY", "DELTA", "SPOT"}) else 0),
             )
 
             cursor.execute(
@@ -2314,34 +2558,26 @@ def salvar_documento(doc, cursor=None):
     conn_externo = cursor is not None
     if not conn_externo:
         conn = obter_conexao_banco()
+        conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
+    else:
+        conn = None
 
     try:
         tipo_doc = str(doc.get("tipo", "")).upper()
-        if tipo_doc == "NF":
-            numero_original = str(doc.get("numero_original", "")).strip()
-            try:
-                numero_original_int = int(re.sub(r"\D", "", numero_original))
-            except ValueError:
-                numero_original_int = None
+        numero_chave = int(doc["numero"])
+        numero_original_txt = str(doc.get("numero_original", "")).strip()
 
-            if numero_original:
-                if numero_original_int is not None:
-                    cursor.execute(
-                        """
-                        DELETE FROM documentos
-                        WHERE tipo='NF' AND numero<>? AND (numero_original=? OR numero=?)
-                        """,
-                        (doc["numero"], numero_original, numero_original_int),
-                    )
-                else:
-                    cursor.execute(
-                        """
-                        DELETE FROM documentos
-                        WHERE tipo='NF' AND numero<>? AND numero_original=?
-                        """,
-                        (doc["numero"], numero_original),
-                    )
+        if tipo_doc == "NF":
+            numero_original_txt, _ = _coletar_numero_original_para_match(numero_original_txt, numero_chave)
+            existente = _buscar_documento_existente_sync(cursor, tipo_doc, numero_chave, numero_original_txt)
+            if existente:
+                try:
+                    numero_chave = int(existente["numero"])
+                except (TypeError, ValueError, KeyError):
+                    numero_chave = int(doc["numero"])
+        elif not numero_original_txt:
+            numero_original_txt = _numero_para_texto(numero_chave)
 
         cursor.execute(
             """
@@ -2392,8 +2628,8 @@ def salvar_documento(doc, cursor=None):
                 END
             """,
             (
-                doc["numero"],
-                doc["numero_original"],
+                numero_chave,
+                numero_original_txt,
                 doc["tipo"],
                 doc["data"].strftime("%d/%m/%Y"),
                 doc["valor_inicial"],
@@ -2419,11 +2655,18 @@ def salvar_documento(doc, cursor=None):
 
 def alterar_competencia_documento(tipo, numero, mes_competencia, ano_competencia):
     conn = obter_conexao_banco()
+    conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
     competencia = f"{mes_competencia}/{ano_competencia}"
+    ids_alvo = _coletar_ids_documentos_por_numero(cursor, tipo, numero)
+    if not ids_alvo:
+        conn.close()
+        return 0
+
+    placeholders = ",".join("?" for _ in ids_alvo)
     cursor.execute(
-        "UPDATE documentos SET competencia=?, competencia_manual=1 WHERE tipo=? AND numero=?",
-        (competencia, tipo, numero),
+        f"UPDATE documentos SET competencia=?, competencia_manual=1 WHERE id IN ({placeholders})",
+        (competencia, *ids_alvo),
     )
     alterados = cursor.rowcount
     conn.commit()
@@ -2436,16 +2679,18 @@ def alterar_competencia_documento(tipo, numero, mes_competencia, ano_competencia
 
 def _normalizar_modalidade_frete(nova_modalidade):
     modalidade = normalizar_texto(str(nova_modalidade or "")).upper().strip()
-    if modalidade in {"INTERCOMPANY", "DELTA", "FRANQUIA"}:
+    if modalidade in {"INTERCOMPANY", "DELTA", "SPOT", "FRANQUIA"}:
         return modalidade
     if "INTER" in modalidade and "COMPANY" in modalidade:
         return "INTERCOMPANY"
     if "DELTA" in modalidade:
         return "DELTA"
+    if "SPOT" in modalidade:
+        return "SPOT"
     return "FRANQUIA"
 
 
-def _coletar_ids_documentos_para_frete(cursor, tipo, numero):
+def _coletar_ids_documentos_por_numero(cursor, tipo, numero):
     tipo_norm = str(tipo or "").upper().strip()
     numero_txt = str(numero or "").strip()
     numero_digitos = re.sub(r"\D", "", numero_txt)
@@ -2460,24 +2705,23 @@ def _coletar_ids_documentos_para_frete(cursor, tipo, numero):
         except ValueError:
             pass
 
-    encontrados = {}
+    ids_encontrados = []
+    vistos = set()
 
     def _registrar(linhas):
         for linha in linhas:
-            encontrados[int(linha["id"])] = {
-                "id": int(linha["id"]),
-                "frete": str(linha["frete"] or "").upper().strip(),
-                "frete_manual": int(linha["frete_manual"] or 0),
-                "frete_revisado_manual": int(linha["frete_revisado_manual"] or 0),
-            }
+            doc_id = int(linha["id"])
+            if doc_id in vistos:
+                continue
+            vistos.add(doc_id)
+            ids_encontrados.append(doc_id)
 
     if tipo_norm == "NF":
         if valores_int:
             placeholders = ",".join("?" for _ in valores_int)
             cursor.execute(
                 f"""
-                SELECT id, frete, COALESCE(frete_manual,0) AS frete_manual
-                     , COALESCE(frete_revisado_manual,0) AS frete_revisado_manual
+                SELECT id
                 FROM documentos
                 WHERE tipo='NF' AND numero IN ({placeholders})
                 """,
@@ -2489,8 +2733,7 @@ def _coletar_ids_documentos_para_frete(cursor, tipo, numero):
             placeholders = ",".join("?" for _ in valores_texto)
             cursor.execute(
                 f"""
-                SELECT id, frete, COALESCE(frete_manual,0) AS frete_manual
-                     , COALESCE(frete_revisado_manual,0) AS frete_revisado_manual
+                SELECT id
                 FROM documentos
                 WHERE tipo='NF' AND numero_original IN ({placeholders})
                 """,
@@ -2502,8 +2745,7 @@ def _coletar_ids_documentos_para_frete(cursor, tipo, numero):
             placeholders = ",".join("?" for _ in valores_int)
             cursor.execute(
                 f"""
-                SELECT id, frete, COALESCE(frete_manual,0) AS frete_manual
-                     , COALESCE(frete_revisado_manual,0) AS frete_revisado_manual
+                SELECT id
                 FROM documentos
                 WHERE tipo='NF' AND CAST(numero_original AS INTEGER) IN ({placeholders})
                 """,
@@ -2516,8 +2758,7 @@ def _coletar_ids_documentos_para_frete(cursor, tipo, numero):
         numero_ref = next(iter(valores_int))
         cursor.execute(
             """
-            SELECT id, frete, COALESCE(frete_manual,0) AS frete_manual
-                 , COALESCE(frete_revisado_manual,0) AS frete_revisado_manual
+            SELECT id
             FROM documentos
             WHERE tipo=? AND numero=?
             """,
@@ -2525,7 +2766,34 @@ def _coletar_ids_documentos_para_frete(cursor, tipo, numero):
         )
         _registrar(cursor.fetchall())
 
-    return list(encontrados.values())
+    return ids_encontrados
+
+
+def _coletar_ids_documentos_para_frete(cursor, tipo, numero):
+    ids_alvo = _coletar_ids_documentos_por_numero(cursor, tipo, numero)
+    if not ids_alvo:
+        return []
+
+    placeholders = ",".join("?" for _ in ids_alvo)
+    cursor.execute(
+        f"""
+        SELECT id, frete, COALESCE(frete_manual,0) AS frete_manual
+             , COALESCE(frete_revisado_manual,0) AS frete_revisado_manual
+        FROM documentos
+        WHERE id IN ({placeholders})
+        """,
+        tuple(ids_alvo),
+    )
+
+    return [
+        {
+            "id": int(linha["id"]),
+            "frete": str(linha["frete"] or "").upper().strip(),
+            "frete_manual": int(linha["frete_manual"] or 0),
+            "frete_revisado_manual": int(linha["frete_revisado_manual"] or 0),
+        }
+        for linha in cursor.fetchall()
+    ]
 
 
 def atualizar_modalidade_frete_documento(tipo, numero, nova_modalidade):
@@ -2603,40 +2871,55 @@ def declarar_delta(tipo, numero):
     return salvar_alteracao_frete_manual(tipo, numero, "DELTA")
 
 
+def declarar_spot(tipo, numero):
+    return salvar_alteracao_frete_manual(tipo, numero, "SPOT")
+
+
 def registrar_substituicao(tipo_antigo, numero_antigo, tipo_novo, numero_novo):
     conn = obter_conexao_banco()
+    conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
 
     status_novo = f"DOCUMENTO SUBSTITUINDO DOCUMENTO {numero_antigo} {tipo_antigo}"
     status_antigo = f"DOCUMENTO SUBSTITUIDO POR {numero_novo} {tipo_novo}"
+    ids_novo = _coletar_ids_documentos_por_numero(cursor, tipo_novo, numero_novo)
+    ids_antigo = _coletar_ids_documentos_por_numero(cursor, tipo_antigo, numero_antigo)
 
-    cursor.execute(
-        """
-        UPDATE documentos
-        SET
-            status_original=COALESCE(status_original, status),
-            status=?
-        WHERE tipo=? AND numero=?
-        """,
-        (status_novo, tipo_novo, numero_novo),
-    )
-    novo_alterado = cursor.rowcount
+    if ids_novo:
+        placeholders_novo = ",".join("?" for _ in ids_novo)
+        cursor.execute(
+            f"""
+            UPDATE documentos
+            SET
+                status_original=COALESCE(status_original, status),
+                status=?
+            WHERE id IN ({placeholders_novo})
+            """,
+            (status_novo, *ids_novo),
+        )
+        novo_alterado = cursor.rowcount
+    else:
+        novo_alterado = 0
 
-    cursor.execute(
-        """
-        UPDATE documentos
-        SET
-            valor_inicial_original=COALESCE(valor_inicial_original, valor_inicial),
-            valor_final_original=COALESCE(valor_final_original, valor_final),
-            status_original=COALESCE(status_original, status),
-            valor_inicial=0,
-            valor_final=0,
-            status=?
-        WHERE tipo=? AND numero=?
-        """,
-        (status_antigo, tipo_antigo, numero_antigo),
-    )
-    antigo_alterado = cursor.rowcount
+    if ids_antigo:
+        placeholders_antigo = ",".join("?" for _ in ids_antigo)
+        cursor.execute(
+            f"""
+            UPDATE documentos
+            SET
+                valor_inicial_original=COALESCE(valor_inicial_original, valor_inicial),
+                valor_final_original=COALESCE(valor_final_original, valor_final),
+                status_original=COALESCE(status_original, status),
+                valor_inicial=0,
+                valor_final=0,
+                status=?
+            WHERE id IN ({placeholders_antigo})
+            """,
+            (status_antigo, *ids_antigo),
+        )
+        antigo_alterado = cursor.rowcount
+    else:
+        antigo_alterado = 0
 
     conn.commit()
     conn.close()
@@ -2648,35 +2931,46 @@ def registrar_substituicao(tipo_antigo, numero_antigo, tipo_novo, numero_novo):
 
 def desfazer_substituicao(tipo_antigo, numero_antigo, tipo_novo, numero_novo):
     conn = obter_conexao_banco()
+    conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
+    ids_antigo = _coletar_ids_documentos_por_numero(cursor, tipo_antigo, numero_antigo)
+    ids_novo = _coletar_ids_documentos_por_numero(cursor, tipo_novo, numero_novo)
 
-    cursor.execute(
-        """
-        UPDATE documentos
-        SET
-            valor_inicial=COALESCE(valor_inicial_original, valor_inicial),
-            valor_final=COALESCE(valor_final_original, valor_final),
-            status=COALESCE(status_original, 'OK'),
-            valor_inicial_original=NULL,
-            valor_final_original=NULL,
-            status_original=NULL
-        WHERE tipo=? AND numero=? AND UPPER(status) LIKE 'DOCUMENTO SUBSTITUIDO POR%'
-        """,
-        (tipo_antigo, numero_antigo),
-    )
-    antigo_restaurado = cursor.rowcount
+    if ids_antigo:
+        placeholders_antigo = ",".join("?" for _ in ids_antigo)
+        cursor.execute(
+            f"""
+            UPDATE documentos
+            SET
+                valor_inicial=COALESCE(valor_inicial_original, valor_inicial),
+                valor_final=COALESCE(valor_final_original, valor_final),
+                status=COALESCE(status_original, 'OK'),
+                valor_inicial_original=NULL,
+                valor_final_original=NULL,
+                status_original=NULL
+            WHERE id IN ({placeholders_antigo}) AND UPPER(status) LIKE 'DOCUMENTO SUBSTITUIDO POR%'
+            """,
+            tuple(ids_antigo),
+        )
+        antigo_restaurado = cursor.rowcount
+    else:
+        antigo_restaurado = 0
 
-    cursor.execute(
-        """
-        UPDATE documentos
-        SET
-            status=COALESCE(status_original, 'OK'),
-            status_original=NULL
-        WHERE tipo=? AND numero=? AND UPPER(status) LIKE 'DOCUMENTO SUBSTITUINDO DOCUMENTO%'
-        """,
-        (tipo_novo, numero_novo),
-    )
-    novo_restaurado = cursor.rowcount
+    if ids_novo:
+        placeholders_novo = ",".join("?" for _ in ids_novo)
+        cursor.execute(
+            f"""
+            UPDATE documentos
+            SET
+                status=COALESCE(status_original, 'OK'),
+                status_original=NULL
+            WHERE id IN ({placeholders_novo}) AND UPPER(status) LIKE 'DOCUMENTO SUBSTITUINDO DOCUMENTO%'
+            """,
+            tuple(ids_novo),
+        )
+        novo_restaurado = cursor.rowcount
+    else:
+        novo_restaurado = 0
 
     conn.commit()
     conn.close()
@@ -2688,9 +2982,16 @@ def desfazer_substituicao(tipo_antigo, numero_antigo, tipo_novo, numero_novo):
 
 def cancelar_documento(tipo, numero):
     conn = obter_conexao_banco()
+    conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
+    ids_alvo = _coletar_ids_documentos_por_numero(cursor, tipo, numero)
+    if not ids_alvo:
+        conn.close()
+        return 0
+
+    placeholders = ",".join("?" for _ in ids_alvo)
     cursor.execute(
-        """
+        f"""
         UPDATE documentos
         SET
             valor_inicial_original=COALESCE(valor_inicial_original, valor_inicial),
@@ -2700,9 +3001,9 @@ def cancelar_documento(tipo, numero):
             valor_final=0,
             status='CANCELADO MANUALMENTE',
             cancelado_manual=1
-        WHERE tipo=? AND numero=?
+        WHERE id IN ({placeholders})
         """,
-        (tipo, numero),
+        tuple(ids_alvo),
     )
     alterados = cursor.rowcount
     conn.commit()
@@ -2715,9 +3016,16 @@ def cancelar_documento(tipo, numero):
 
 def desfazer_cancelamento_documento(tipo, numero):
     conn = obter_conexao_banco()
+    conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
+    ids_alvo = _coletar_ids_documentos_por_numero(cursor, tipo, numero)
+    if not ids_alvo:
+        conn.close()
+        return 0
+
+    placeholders = ",".join("?" for _ in ids_alvo)
     cursor.execute(
-        """
+        f"""
         UPDATE documentos
         SET
             valor_inicial=COALESCE(valor_inicial_original, valor_inicial),
@@ -2727,9 +3035,9 @@ def desfazer_cancelamento_documento(tipo, numero):
             valor_final_original=NULL,
             status_original=NULL,
             cancelado_manual=0
-        WHERE tipo=? AND numero=? AND UPPER(status)='CANCELADO MANUALMENTE'
+        WHERE id IN ({placeholders}) AND UPPER(status)='CANCELADO MANUALMENTE'
         """,
-        (tipo, numero),
+        tuple(ids_alvo),
     )
     alterados = cursor.rowcount
     conn.commit()
@@ -2786,12 +3094,12 @@ def _obter_dataframe_relatorio_filtrado(data_inicial, data_final, docs_df_base=N
         return pd.DataFrame(), ""
 
     df["numero_original_num"] = pd.to_numeric(df.get("numero_original"), errors="coerce")
+    df["numero_exibicao"] = df.apply(
+        lambda r: _numero_documento_exibicao(r["tipo"], r["numero"], r.get("numero_original", ""), r.get("data_emissao", "")),
+        axis=1,
+    )
     df["chave_documento"] = df.apply(
-        lambda r: (
-            f"NF:{int(r['numero_original_num'])}"
-            if str(r["tipo"]).upper() == "NF" and pd.notna(r["numero_original_num"])
-            else f"{str(r['tipo']).upper()}:{int(r['numero'])}"
-        ),
+        lambda r: _chave_documento_compativel(r["tipo"], r["numero"], r.get("numero_original", "")),
         axis=1,
     )
     df = df.sort_values(["id"]).drop_duplicates(subset=["chave_documento"], keep="last")
@@ -2875,22 +3183,27 @@ def _montar_dataframe_exportacao_periodo(df_filtrado):
 
     dados = df_filtrado.copy()
     dados["numero_doc"] = dados.apply(
-        lambda r: int(r["numero_original_num"])
-        if str(r["tipo"]).upper() == "NF" and pd.notna(r["numero_original_num"])
-        else int(r["numero"]) if pd.notna(r["numero"]) else None,
+        lambda r: _numero_documento_exibicao(r["tipo"], r["numero"], r.get("numero_original", ""), r.get("data_emissao", "")),
         axis=1,
     )
-    dados["numero_doc"] = pd.to_numeric(dados["numero_doc"], errors="coerce")
-    dados = dados.dropna(subset=["numero_doc"]).copy()
+    dados["numero_doc"] = dados["numero_doc"].astype(str).str.strip()
+    dados = dados[dados["numero_doc"] != ""].copy()
     if dados.empty:
         return pd.DataFrame()
 
-    dados["numero_doc"] = dados["numero_doc"].astype(int)
+    dados["numero_doc_ordem"] = pd.to_numeric(dados["numero_doc"], errors="coerce")
+    # Evita alerta do Excel "numero armazenado como texto" para documentos numericos.
+    dados["numero_doc"] = dados.apply(
+        lambda r: int(r["numero_doc_ordem"]) if pd.notna(r["numero_doc_ordem"]) else r["numero_doc"],
+        axis=1,
+    )
+    dados["numero_ordem"] = pd.to_numeric(dados["numero"], errors="coerce")
+    dados["numero_doc_ordem"] = dados["numero_doc_ordem"].fillna(dados["numero_ordem"])
     dados["tipo"] = dados["tipo"].astype(str).str.upper()
     dados["frete"] = dados["frete"].astype(str)
     dados["status"] = dados["status"].astype(str)
     dados["mes_referencia"] = pd.to_datetime(dados["data_competencia"], errors="coerce")
-    dados = dados.sort_values(["data_emissao", "numero_doc"], ascending=[True, True])
+    dados = dados.sort_values(["data_emissao", "numero_doc_ordem", "numero_doc"], ascending=[True, True, True])
 
     export_df = dados[
         [
@@ -2989,6 +3302,7 @@ def exportar_relatorio_filtrado():
             for linha in range(2, len(df_export) + 2):
                 ws[f"A{linha}"].number_format = "DD/MM/YYYY"
                 ws[f"B{linha}"].number_format = '[$-pt-BR]mmmm/yyyy'
+                ws[f"C{linha}"].number_format = "0"
                 ws[f"E{linha}"].alignment = Alignment(horizontal="left", vertical="center")
                 ws[f"F{linha}"].number_format = "R$ #,##0.00"
                 ws[f"G{linha}"].number_format = "R$ #,##0.00"
@@ -3061,7 +3375,11 @@ def gerar_excel(data_inicial=None, data_final=None, exibir_mensagem=True):
         )
 
     df = df.sort_values(["data_emissao", "numero"], ascending=[True, True])
-    df["Concat"] = df["numero"].astype(str) + " " + df["tipo"]
+    df["numero_exibicao"] = df.apply(
+        lambda r: _numero_documento_exibicao(r["tipo"], r["numero"], r.get("numero_original", ""), r.get("data_emissao", "")),
+        axis=1,
+    )
+    df["Concat"] = df["numero_exibicao"].astype(str) + " " + df["tipo"].astype(str)
     # Usa a data de competencia ja validada para evitar coluna "Mes Referencia" vazia no Excel.
     df["competencia_excel"] = df["data_competencia"]
 
@@ -3094,20 +3412,21 @@ def gerar_excel(data_inicial=None, data_final=None, exibir_mensagem=True):
 
     def montar_df_relatorio(df_in, usar_numero_real_nf=False):
         dados = df_in.copy()
-        if usar_numero_real_nf:
-            dados["numero_doc"] = dados.apply(
-                lambda r: int(r["numero_original_num"])
-                if str(r["tipo"]).upper() == "NF" and pd.notna(r["numero_original_num"])
-                else int(r["numero"]) if pd.notna(r["numero"]) else None,
-                axis=1,
-            )
-        else:
-            dados["numero_doc"] = dados["numero"]
-
-        dados["numero_doc"] = pd.to_numeric(dados["numero_doc"], errors="coerce")
-        dados = dados.dropna(subset=["numero_doc"]).copy()
-        dados["numero_doc"] = dados["numero_doc"].astype(int)
+        dados["numero_doc"] = dados.apply(
+            lambda r: _numero_documento_exibicao(r["tipo"], r["numero"], r.get("numero_original", ""), r.get("data_emissao", "")),
+            axis=1,
+        )
+        dados["numero_doc"] = dados["numero_doc"].astype(str).str.strip()
+        dados = dados[dados["numero_doc"] != ""].copy()
+        dados["numero_doc_ordem"] = pd.to_numeric(dados["numero_doc"], errors="coerce")
+        dados["numero_doc"] = dados.apply(
+            lambda r: int(r["numero_doc_ordem"]) if pd.notna(r["numero_doc_ordem"]) else r["numero_doc"],
+            axis=1,
+        )
+        dados["numero_ordem"] = pd.to_numeric(dados["numero"], errors="coerce")
+        dados["numero_doc_ordem"] = dados["numero_doc_ordem"].fillna(dados["numero_ordem"])
         dados["Concat"] = dados["numero_doc"].astype(str) + " " + dados["tipo"].astype(str)
+        dados = dados.sort_values(["data_emissao", "numero_doc_ordem", "numero_doc"], ascending=[True, True, True])
 
         dados = dados[
             [
@@ -3136,7 +3455,7 @@ def gerar_excel(data_inicial=None, data_final=None, exibir_mensagem=True):
         ]
         return dados
 
-    df_relatorio_1 = montar_df_relatorio(df_base, usar_numero_real_nf=False)
+    df_relatorio_1 = montar_df_relatorio(df_base, usar_numero_real_nf=True)
     df_relatorio_2 = montar_df_relatorio(df_base, usar_numero_real_nf=True)
 
     try:
@@ -3452,7 +3771,7 @@ def abrir_dialogo_alterar_competencia():
     tipo_combo.set("NF")
     tipo_combo.grid(row=1, column=0, sticky="ew", padx=6, pady=(0, 10))
 
-    numero_entry = ctk.CTkEntry(form, width=260, placeholder_text="Ex.: 20260089 ou 2390")
+    numero_entry = ctk.CTkEntry(form, width=260, placeholder_text="Ex.: 89 ou 2390")
     numero_entry.grid(row=1, column=1, sticky="ew", padx=6, pady=(0, 10))
 
     ctk.CTkLabel(form, text="Novo mês de competência").grid(row=2, column=0, sticky="w", padx=6, pady=(0, 4))
@@ -3518,7 +3837,7 @@ def _abrir_dialogo_declarar_frete(rotulo_frete):
     tipo_combo.set("NF")
     tipo_combo.grid(row=1, column=0, sticky="ew", padx=6)
 
-    numero_entry = ctk.CTkEntry(form, width=260, placeholder_text="Ex.: 20260092 ou 2390")
+    numero_entry = ctk.CTkEntry(form, width=260, placeholder_text="Ex.: 92 ou 2390")
     numero_entry.grid(row=1, column=1, sticky="ew", padx=6)
 
     desfazer_var = ctk.BooleanVar(value=False)
@@ -3546,7 +3865,7 @@ def _abrir_dialogo_declarar_frete(rotulo_frete):
         acao = rotulo_frete.upper().strip()
 
         if desfazer_var.get():
-            # Desfazer intercompany/delta: retorna para FRANQUIA.
+            # Desfaz a modalidade manual e retorna para FRANQUIA.
             resultado = salvar_alteracao_frete_manual(tipo, numero_doc, "FRANQUIA")
             if resultado.get("encontrados", 0) == 0:
                 messagebox.showwarning("Aviso", f"Documento não encontrado para des{rotulo_frete.lower()}.")
@@ -3563,6 +3882,8 @@ def _abrir_dialogo_declarar_frete(rotulo_frete):
                 resultado = declarar_intercompany(tipo, numero_doc)
             elif acao == "DELTA":
                 resultado = declarar_delta(tipo, numero_doc)
+            elif acao == "SPOT":
+                resultado = declarar_spot(tipo, numero_doc)
             else:
                 resultado = salvar_alteracao_frete_manual(tipo, numero_doc, acao)
 
@@ -3589,6 +3910,10 @@ def abrir_dialogo_declarar_delta():
     _abrir_dialogo_declarar_frete("Delta")
 
 
+def abrir_dialogo_declarar_spot():
+    _abrir_dialogo_declarar_frete("Spot")
+
+
 def abrir_dialogo_cancelar_documento():
     dialog = ctk.CTkToplevel(app)
     dialog.title("Cancelar documento")
@@ -3606,7 +3931,7 @@ def abrir_dialogo_cancelar_documento():
     tipo_combo.set("NF")
     tipo_combo.grid(row=1, column=0, sticky="ew", padx=6)
 
-    numero_entry = ctk.CTkEntry(form, width=260, placeholder_text="Ex.: 20260089 ou 2390")
+    numero_entry = ctk.CTkEntry(form, width=260, placeholder_text="Ex.: 89 ou 2390")
     numero_entry.grid(row=1, column=1, sticky="ew", padx=6)
 
     desfazer_var = ctk.BooleanVar(value=False)
@@ -3671,7 +3996,7 @@ def abrir_dialogo_substituir_documento():
     tipo_antigo_combo.set("NF")
     tipo_antigo_combo.grid(row=2, column=0, sticky="ew", padx=6, pady=(0, 10))
 
-    numero_antigo_entry = ctk.CTkEntry(form, width=320, placeholder_text="Ex.: 20260089 ou 2390")
+    numero_antigo_entry = ctk.CTkEntry(form, width=320, placeholder_text="Ex.: 89 ou 2390")
     numero_antigo_entry.grid(row=2, column=1, sticky="ew", padx=6, pady=(0, 10))
 
     ctk.CTkLabel(form, text="Documento substituto", font=ctk.CTkFont(weight="bold")).grid(
@@ -3684,7 +4009,7 @@ def abrir_dialogo_substituir_documento():
     tipo_novo_combo.set("NF")
     tipo_novo_combo.grid(row=5, column=0, sticky="ew", padx=6)
 
-    numero_novo_entry = ctk.CTkEntry(form, width=320, placeholder_text="Ex.: 20260090 ou 2391")
+    numero_novo_entry = ctk.CTkEntry(form, width=320, placeholder_text="Ex.: 90 ou 2391")
     numero_novo_entry.grid(row=5, column=1, sticky="ew", padx=6)
 
     desfazer_var = ctk.BooleanVar(value=False)
@@ -3764,7 +4089,7 @@ def abrir_relatorio_cancelados():
     conn = obter_conexao_banco()
     df = pd.read_sql_query(
         """
-        SELECT tipo, numero, data_emissao, valor_final, status
+        SELECT id, tipo, numero, numero_original, data_emissao, valor_final, status
         FROM documentos
         WHERE UPPER(status) LIKE '%CANCELADO%'
         """,
@@ -3775,6 +4100,15 @@ def abrir_relatorio_cancelados():
     df["data_emissao_dt"] = pd.to_datetime(df["data_emissao"], dayfirst=True, errors="coerce")
     df = df.dropna(subset=["data_emissao_dt"])
     df = df[(df["data_emissao_dt"] >= data_inicial) & (df["data_emissao_dt"] <= data_final)]
+    df["numero_exibicao"] = df.apply(
+        lambda r: _numero_documento_exibicao(r["tipo"], r["numero"], r.get("numero_original", ""), r.get("data_emissao", "")),
+        axis=1,
+    )
+    df["chave_documento"] = df.apply(
+        lambda r: _chave_documento_compativel(r["tipo"], r["numero"], r.get("numero_original", "")),
+        axis=1,
+    )
+    df = df.sort_values(["id"]).drop_duplicates(subset=["chave_documento"], keep="last")
 
     if df.empty:
         messagebox.showinfo(
@@ -3852,7 +4186,7 @@ def abrir_relatorio_cancelados():
             "end",
             values=(
                 str(linha["tipo"]),
-                int(linha["numero"]),
+                str(linha["numero_exibicao"]),
                 data_txt,
                 formatar_moeda_brl(valor),
                 str(linha["status"]),
@@ -3875,7 +4209,7 @@ def abrir_busca_documentos():
         font=ctk.CTkFont(size=16, weight="bold"),
     ).pack(pady=(12, 8))
 
-    busca_entry = ctk.CTkEntry(dialog, width=300, placeholder_text="Digite o numero do documento")
+    busca_entry = ctk.CTkEntry(dialog, width=300, placeholder_text="Digite o numero original do documento")
     busca_entry.pack(pady=(0, 10))
 
     container = ctk.CTkFrame(dialog)
@@ -3916,16 +4250,29 @@ def abrir_busca_documentos():
 
         df = pd.read_sql_query(
             """
-            SELECT tipo, numero, data_emissao, valor_final, status
+            SELECT id, tipo, numero, numero_original, data_emissao, valor_final, status
             FROM documentos
-            WHERE numero LIKE ?
-            ORDER BY data_emissao
+            WHERE CAST(numero AS TEXT) LIKE ?
+               OR COALESCE(numero_original, '') LIKE ?
+            ORDER BY data_emissao, id
             """,
             conn,
-            params=(f"%{termo}%",),
+            params=(f"%{termo}%", f"%{termo}%"),
         )
 
         conn.close()
+        if df.empty:
+            return
+
+        df["numero_exibicao"] = df.apply(
+            lambda r: _numero_documento_exibicao(r["tipo"], r["numero"], r.get("numero_original", ""), r.get("data_emissao", "")),
+            axis=1,
+        )
+        df["chave_documento"] = df.apply(
+            lambda r: _chave_documento_compativel(r["tipo"], r["numero"], r.get("numero_original", "")),
+            axis=1,
+        )
+        df = df.sort_values(["id"]).drop_duplicates(subset=["chave_documento"], keep="last")
 
         for _, row in df.iterrows():
 
@@ -3934,7 +4281,7 @@ def abrir_busca_documentos():
                 "end",
                 values=(
                     row["tipo"],
-                    row["numero"],
+                    row["numero_exibicao"],
                     row["data_emissao"],
                     formatar_moeda_brl(row["valor_final"]),
                     row["status"],
@@ -3991,13 +4338,13 @@ def _obter_dataframe_dashboard_filtrado():
     df["valor_final"] = pd.to_numeric(df["valor_final"], errors="coerce")
     df["tipo"] = df["tipo"].astype(str).str.upper()
     df["status"] = df["status"].astype(str)
+    df["numero_exibicao"] = df.apply(
+        lambda r: _numero_documento_exibicao(r["tipo"], r["numero"], r.get("numero_original", ""), r.get("data_emissao", "")),
+        axis=1,
+    )
 
     df["chave_documento"] = df.apply(
-        lambda r: (
-            f"NF:{int(r['numero_original_num'])}"
-            if r["tipo"] == "NF" and pd.notna(r["numero_original_num"])
-            else f"{r['tipo']}:{int(r['numero'])}" if pd.notna(r["numero"]) else f"{r['tipo']}:SEMNUM"
-        ),
+        lambda r: _chave_documento_compativel(r["tipo"], r["numero"], r.get("numero_original", "")),
         axis=1,
     )
     df = df.sort_values(["id"]).drop_duplicates(subset=["chave_documento"], keep="last")
@@ -5006,10 +5353,10 @@ screen_nav_buttons = {}
 SCREEN_NAV_STYLES = {}
 action_buttons = []
 SCREEN_NAV_CATALOG = {
-    "dashboard": "📊 Dashboard",
-    "relatorios": "📄 Relatórios",
-    "alteracoes": "⚙️ Alterações",
-    "configuracoes": "🔧 Configurações",
+    "dashboard": "Dashboard",
+    "relatorios": "Relatórios",
+    "alteracoes": "Alterações",
+    "configuracoes": "Configurações",
 }
 SCREEN_NAV_DEFAULT_ORDER = list(SCREEN_NAV_CATALOG.keys())
 ACTION_HOST_SCREENS = ["relatorios", "alteracoes", "configuracoes"]
@@ -5266,21 +5613,22 @@ def alternar_tema_interface():
 
 def _catalogo_acoes_interface():
     return {
-        "selecionar_relatorio": {"titulo": "📄 Selecionar relatório", "comando": selecionar_relatorio},
-        "abrir_relatorio": {"titulo": "📤 Abrir relatório", "comando": abrir_relatorio},
-        "exportar_relatorio_periodo": {"titulo": "💾 Exportar relatório do período", "comando": exportar_relatorio_filtrado},
-        "pasta_saida": {"titulo": "📂 Pasta de saída", "comando": selecionar_pasta_saida_relatorios},
-        "relatorio_cancelados": {"titulo": "🚫 Relatórios cancelados", "comando": abrir_relatorio_cancelados},
-        "grafico_faturamento": {"titulo": "📈 Gráfico de faturamento", "comando": abrir_grafico_faturamento},
-        "buscar_documento": {"titulo": "🔎 Buscar documento", "comando": abrir_busca_documentos},
-        "alterar_competencia": {"titulo": "🗓️ Alterar competência", "comando": abrir_dialogo_alterar_competencia},
-        "substituir_documento": {"titulo": "🔁 Substituir documento", "comando": abrir_dialogo_substituir_documento},
-        "cancelar_documento": {"titulo": "❌ Cancelar documento", "comando": abrir_dialogo_cancelar_documento},
-        "declarar_intercompany": {"titulo": "🏢 Declarar intercompany", "comando": abrir_dialogo_declarar_intercompany},
-        "declarar_delta": {"titulo": "📦 Declarar delta", "comando": abrir_dialogo_declarar_delta},
-        "alternar_tema": {"titulo": "🌗 Alternar tema", "comando": alternar_tema_interface},
-        "exportar_configuracoes": {"titulo": "💾 Exportar configurações", "comando": exportar_configuracoes_ui},
-        "importar_configuracoes": {"titulo": "📥 Importar configurações", "comando": importar_configuracoes_ui},
+        "selecionar_relatorio": {"titulo": "Selecionar relatório", "comando": selecionar_relatorio},
+        "abrir_relatorio": {"titulo": "Abrir relatório", "comando": abrir_relatorio},
+        "exportar_relatorio_periodo": {"titulo": "Exportar relatório do período", "comando": exportar_relatorio_filtrado},
+        "pasta_saida": {"titulo": "Pasta de saída", "comando": selecionar_pasta_saida_relatorios},
+        "relatorio_cancelados": {"titulo": "Relatórios cancelados", "comando": abrir_relatorio_cancelados},
+        "grafico_faturamento": {"titulo": "Gráfico de faturamento", "comando": abrir_grafico_faturamento},
+        "buscar_documento": {"titulo": "Buscar documento", "comando": abrir_busca_documentos},
+        "alterar_competencia": {"titulo": "Alterar competência", "comando": abrir_dialogo_alterar_competencia},
+        "substituir_documento": {"titulo": "Substituir documento", "comando": abrir_dialogo_substituir_documento},
+        "cancelar_documento": {"titulo": "Cancelar documento", "comando": abrir_dialogo_cancelar_documento},
+        "declarar_intercompany": {"titulo": "Declarar intercompany", "comando": abrir_dialogo_declarar_intercompany},
+        "declarar_delta": {"titulo": "Declarar delta", "comando": abrir_dialogo_declarar_delta},
+        "declarar_spot": {"titulo": "Declarar spot", "comando": abrir_dialogo_declarar_spot},
+        "alternar_tema": {"titulo": "Alternar tema", "comando": alternar_tema_interface},
+        "exportar_configuracoes": {"titulo": "Exportar configurações", "comando": exportar_configuracoes_ui},
+        "importar_configuracoes": {"titulo": "Importar configurações", "comando": importar_configuracoes_ui},
     }
 
 
@@ -5301,6 +5649,7 @@ def _layout_botoes_padrao():
             "cancelar_documento",
             "declarar_intercompany",
             "declarar_delta",
+            "declarar_spot",
         ],
         "configuracoes": [
             "alternar_tema",
@@ -5964,14 +6313,14 @@ def _criar_botao_acao(parent, texto, comando, variant="primary", height=40):
     botao = ctk.CTkButton(
         parent,
         text=texto,
-        height=height,
-        corner_radius=12,
+        height=max(height, 42),
+        corner_radius=14,
         border_width=1,
         border_color=border_color,
         fg_color=fg_color,
         hover_color=hover_color,
         text_color=text_color,
-        font=ctk.CTkFont(family="Segoe UI", size=12, weight="bold"),
+        font=ctk.CTkFont(family="Segoe UI Semibold", size=13, weight="bold"),
         command=comando,
     )
     botao._action_variant = "secondary" if eh_secundario else "primary"
@@ -6011,7 +6360,7 @@ def _configurar_tab_ativo(tab_id):
 
 def _executar_acao_menu(tab_id, titulo_item, comando):
     if menu_feedback_label and menu_feedback_label.winfo_exists():
-        menu_feedback_label.configure(text=f"✔ {titulo_item}")
+        menu_feedback_label.configure(text=f"Ação selecionada: {titulo_item}")
 
     botao = tab_buttons.get(tab_id)
     if botao and botao.winfo_exists():
@@ -6031,7 +6380,7 @@ def _executar_acao_menu(tab_id, titulo_item, comando):
 def abrir_menu_dropdown(botao, opcoes, tab_id, tab_titulo):
     _configurar_tab_ativo(tab_id)
     if menu_feedback_label and menu_feedback_label.winfo_exists():
-        menu_feedback_label.configure(text=f"Abrindo menu de {tab_titulo}...")
+        menu_feedback_label.configure(text=f"Menu: {tab_titulo}")
 
     menu = tk.Menu(
         app,
@@ -6376,30 +6725,31 @@ def _criar_tabs_menu(parent):
     ui_refs["tabs_card"] = tabs_card
 
     acoes_menu_principal = [
-        ("📂 Pasta do relatório", selecionar_pasta_saida_relatorios),
-        ("🔎 Buscar documento", abrir_busca_documentos),
-        ("📈 Gráfico de faturamento", abrir_grafico_faturamento),
+        ("Pasta do relatório", selecionar_pasta_saida_relatorios),
+        ("Buscar documento", abrir_busca_documentos),
+        ("Gráfico de faturamento", abrir_grafico_faturamento),
     ]
     acoes_menu_relatorios = [
-        ("📄 Selecionar relatório", selecionar_relatorio),
-        ("📤 Abrir relatório", abrir_relatorio),
+        ("Selecionar relatório", selecionar_relatorio),
+        ("Abrir relatório", abrir_relatorio),
         None,
-        ("🚫 Relatórios cancelados", abrir_relatorio_cancelados),
-        ("💾 Exportar configurações", exportar_configuracoes_ui),
-        ("📥 Importar configurações", importar_configuracoes_ui),
+        ("Relatórios cancelados", abrir_relatorio_cancelados),
+        ("Exportar configurações", exportar_configuracoes_ui),
+        ("Importar configurações", importar_configuracoes_ui),
     ]
     acoes_menu_alteracoes = [
-        ("🗓️ Alterar competencia", abrir_dialogo_alterar_competencia),
-        ("🔁 Substituir documento", abrir_dialogo_substituir_documento),
-        ("❌ Cancelar documento", abrir_dialogo_cancelar_documento),
-        ("🏢 Declarar intercompany", abrir_dialogo_declarar_intercompany),
-        ("📦 Declarar delta", abrir_dialogo_declarar_delta),
+        ("Alterar competência", abrir_dialogo_alterar_competencia),
+        ("Substituir documento", abrir_dialogo_substituir_documento),
+        ("Cancelar documento", abrir_dialogo_cancelar_documento),
+        ("Declarar intercompany", abrir_dialogo_declarar_intercompany),
+        ("Declarar delta", abrir_dialogo_declarar_delta),
+        ("Declarar spot", abrir_dialogo_declarar_spot),
     ]
 
     tabs = [
-        ("principal", "🏠 Principal", acoes_menu_principal),
-        ("relatorios", "📄 Relatórios", acoes_menu_relatorios),
-        ("alteracoes", "⚙️ Alterações", acoes_menu_alteracoes),
+        ("principal", "Principal", acoes_menu_principal),
+        ("relatorios", "Relatórios", acoes_menu_relatorios),
+        ("alteracoes", "Alterações", acoes_menu_alteracoes),
     ]
 
     for idx, (tab_id, titulo, opcoes) in enumerate(tabs):
@@ -6676,7 +7026,7 @@ def _criar_navegacao_telas(parent):
 
     btn_reordenar = ctk.CTkButton(
         nav_card,
-        text="↕ Trocar sequência dos botões",
+        text="Organizar botões",
         width=220,
         height=38,
         corner_radius=12,
@@ -6918,7 +7268,7 @@ def _criar_bloco_status_relatorios(parent):
 
     lbl_arquivo = ctk.CTkLabel(
         card,
-        text="📄 Arquivo: nenhum selecionado",
+        text="Arquivo: nenhum selecionado",
         anchor="w",
         justify="left",
         font=ctk.CTkFont(family="Segoe UI", size=12),
@@ -6928,7 +7278,7 @@ def _criar_bloco_status_relatorios(parent):
 
     lbl_saida = ctk.CTkLabel(
         card,
-        text="📂 Pasta de saída: -",
+        text="Pasta de saída: -",
         anchor="w",
         justify="left",
         font=ctk.CTkFont(family="Segoe UI", size=11),
@@ -6938,7 +7288,7 @@ def _criar_bloco_status_relatorios(parent):
 
     lbl_periodo = ctk.CTkLabel(
         card,
-        text="🗓 Período aplicado: período indefinido",
+        text="Período aplicado: período indefinido",
         anchor="w",
         justify="left",
         font=ctk.CTkFont(family="Segoe UI", size=11),
@@ -6948,7 +7298,7 @@ def _criar_bloco_status_relatorios(parent):
 
     lbl_registros = ctk.CTkLabel(
         card,
-        text="🔢 Registros no período: -",
+        text="Registros no período: -",
         anchor="w",
         justify="left",
         font=ctk.CTkFont(family="Segoe UI", size=11),

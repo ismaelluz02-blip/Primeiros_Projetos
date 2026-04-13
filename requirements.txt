@@ -1,1 +1,2 @@
 cx_Freeze==7.2.7
+matplotlib>=3.10
