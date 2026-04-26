@@ -16,8 +16,11 @@ import pandas as pd
 
 import src.config as config
 from src.banco import obter_conexao_banco
+from src.logger import get_logger
 from src.utils import _coletar_numero_original_para_match, competencia_por_data
 from src.documentos import _normalizar_modalidade_frete, _buscar_documento_existente_sync
+
+logger = get_logger(__name__)
 
 
 # ─────────────────────────────────────────────
@@ -69,7 +72,7 @@ def _normalizar_data_emissao_sync(data_txt, padrao_txt):
         if pd.notna(dt):
             return dt.to_pydatetime().strftime("%d/%m/%Y")
     except Exception:
-        pass
+        logger.debug("_normalizar_data_emissao_sync: falha ao converter %r via pandas", valor)
 
     return datetime.now().strftime("%d/%m/%Y")
 
@@ -347,9 +350,9 @@ def importar_configuracoes_json(caminho_arquivo):
                 resumo["atualizados"] += 1
             else:
                 resumo["inseridos"] += 1
-
         except Exception as exc:
             resumo["erros"].append(f"Linha {idx}: {exc}")
+            logger.warning("importar_configuracoes_json: erro na linha %s: %s", idx, exc)
 
     conn.commit()
     conn.close()

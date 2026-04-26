@@ -48,6 +48,15 @@ DB_PATH = os.path.join(APP_DATA_DIR, "faturamento.db")
 LOCK_PATH = os.path.join(APP_DATA_DIR, ".sistema_faturamento.lock")
 
 # ─────────────────────────────────────────────
+#  Constantes de importação
+# ─────────────────────────────────────────────
+
+# Código de filial aceito na importação de relatórios (planilha/PDF).
+# Linhas com filial diferente deste valor são ignoradas.
+FILIAL_PADRAO = "88"
+
+
+# ─────────────────────────────────────────────
 #  Constantes de sincronização
 # ─────────────────────────────────────────────
 
@@ -129,6 +138,6 @@ def configurar_cache_matplotlib():
         os.environ["MPLCONFIGDIR"] = cache_dir
 
 
-# Executa ao importar o módulo, garantindo que DB_PATH seja sempre válido.
+# Executa ao importar o modulo, garantindo que DB_PATH seja sempre valido.
 configurar_diretorio_dados()
 configurar_cache_matplotlib()

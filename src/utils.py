@@ -10,6 +10,10 @@ import unicodedata
 from calendar import monthrange
 from datetime import datetime
 
+from src.logger import get_logger
+
+logger = get_logger(__name__)
+
 # ─────────────────────────────────────────────
 #  Constantes
 # ─────────────────────────────────────────────
@@ -42,14 +46,14 @@ def valor_brasileiro(v):
 def formatar_moeda_brl(valor):
     try:
         return f"R$ {valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-    except:
+    except (TypeError, ValueError):
         return "R$ 0,00"
 
 
 def formatar_moeda_brl_exata(valor):
     try:
         v = float(valor)
-    except:
+    except (TypeError, ValueError):
         return "R$ 0,00"
     if abs(v - round(v)) < 0.005:
         return f"R$ {int(round(v)):,.0f}".replace(",", "X").replace(".", ",").replace("X", ".")
@@ -230,3 +234,56 @@ def _obter_periodo_por_entries(entry_inicio, entry_fim, contexto="Período", sil
         raise ValueError(f"{contexto}: {exc}") from exc
 
     return data_inicial, data_final
+
+
+# ─────────────────────────────────────────────
+#  Utilitários de cor (hex/RGB)
+# ─────────────────────────────────────────────
+
+def _normalizar_hex_cor(cor):
+    if isinstance(cor, (tuple, list)) and cor:
+        cor = cor[0]
+    cor = str(cor).strip()
+    if not cor.startswith("#"):
+        return "#000000"
+    if len(cor) == 4:
+        return "#" + "".join(ch * 2 for ch in cor[1:])
+    if len(cor) != 7:
+        return "#000000"
+    return cor
+
+
+def _hex_para_rgb(cor):
+    c = _normalizar_hex_cor(cor)
+    return tuple(int(c[i:i + 2], 16) for i in (1, 3, 5))
+
+
+def _rgb_para_hex(rgb):
+    r, g, b = [max(0, min(255, int(v))) for v in rgb]
+    return f"#{r:02x}{g:02x}{b:02x}"
+
+
+def _interpolar_cor(cor_a, cor_b, t):
+    a = _hex_para_rgb(cor_a)
+    b = _hex_para_rgb(cor_b)
+    return _rgb_para_hex(tuple(a[i] + (b[i] - a[i]) * t for i in range(3)))
+
+
+# ─────────────────────────────────────────────
+#  Conversão competência ↔ data
+# ─────────────────────────────────────────────
+
+def _competencia_para_data(comp_str):
+    """Converte 'janeiro/2025' → datetime(2025, 1, 1). Retorna None em falha."""
+    try:
+        partes = str(comp_str).lower().split("/")
+        if len(partes) == 2:
+            import unicodedata
+            mes_norm = unicodedata.normalize("NFKD", partes[0].strip()).encode("ASCII", "ignore").decode("ASCII").lower()
+            ano = int(partes[1].strip())
+            mes_idx = MESES.index(mes_norm) + 1
+            from datetime import datetime as _dt
+            return _dt(ano, mes_idx, 1)
+    except Exception:
+        logger.debug("_competencia_para_data: nao foi possivel converter %r", comp_str)
+    return None

@@ -12,6 +12,7 @@ from datetime import datetime
 
 import pandas as pd
 
+import src.config as config
 from src.utils import MESES, parse_valor_monetario, normalizar_texto, competencia_por_data
 
 
@@ -239,11 +240,11 @@ def _linha_valida_para_importacao(linha, mapa):
                 return ""
         return re.sub(r"\D", "", txt)
 
-    # 1) Filial obrigatoriamente 88
+    # 1) Filial deve corresponder a config.FILIAL_PADRAO (padrão "88")
     if not mapa.get("filial"):
         return False
     filial_txt = _normalizar_filial(linha.get(mapa["filial"], ""))
-    if filial_txt != "88":
+    if filial_txt != config.FILIAL_PADRAO:
         return False
 
     # 2) Numero do documento obrigatorio no campo codigo/documento

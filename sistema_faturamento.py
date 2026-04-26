@@ -42,6 +42,11 @@ from src.utils import (
     obter_periodo_padrao_relatorios,
     ler_data_filtro,
     _obter_periodo_por_entries,
+    _normalizar_hex_cor,
+    _hex_para_rgb,
+    _rgb_para_hex,
+    _interpolar_cor,
+    _competencia_para_data,
 )
 
 import src.config as _cfg
@@ -70,9 +75,15 @@ from src.documentos import (
     _buscar_documento_existente_sync,
     register_on_change as _register_doc_on_change,
 )
+from src.dashboard import (
+    obter_dataframe_dashboard,
+    criar_figura_faturamento_periodo,
+    criar_figura_comparativo_tipos,
+)
 from src.relatorios import (
     _obter_dataframe_relatorio_filtrado,
     _montar_dataframe_exportacao_periodo,
+    escrever_excel_faturamento,
 )
 from src.importacao import (
     _normalizar_mes_relatorio,
@@ -97,93 +108,50 @@ from src.sync import (
     _listar_documentos_alterados_para_sync,
 )
 
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-APP_DIR = os.path.dirname(sys.executable) if getattr(sys, "frozen", False) else SCRIPT_DIR
-BASE_DIR = SCRIPT_DIR
-PROJECT_DIR = APP_DIR if getattr(sys, "frozen", False) else os.path.dirname(BASE_DIR)
-RELATORIOS_DIR = os.path.join(PROJECT_DIR, "RELATORIOS")
-DEFAULT_APP_DATA_DIR = os.path.join(
-    os.environ.get("LOCALAPPDATA", BASE_DIR),
-    "Horizonte Logistica",
-    "Sistema de Faturamento",
-)
-APP_DATA_DIR = DEFAULT_APP_DATA_DIR
-SYNC_CONFIG_SCHEMA_VERSION = 1
-SYNC_DOCUMENT_FIELDS = [
-    "tipo",
-    "numero",
-    "numero_original",
-    "data_emissao",
-    "valor_inicial",
-    "valor_final",
-    "frete",
-    "status",
-    "competencia",
-    "valor_inicial_original",
-    "valor_final_original",
-    "status_original",
-    "cancelado_manual",
-    "competencia_manual",
-    "frete_manual",
-    "frete_revisado_manual",
-]
-DB_PATH = os.path.join(APP_DATA_DIR, "faturamento.db")
-LOCK_PATH = os.path.join(APP_DATA_DIR, ".sistema_faturamento.lock")
-LEGACY_DB_PATH = os.path.join(APP_DIR, "faturamento.db")
-LOGO_PATH = os.path.join(APP_DIR, "logo.png")
-APP_USER_MODEL_ID = "horizonte.logistica.sistema.faturamento"
-FALLBACK_APP_DATA_DIR = os.path.join(BASE_DIR, "_dados_app")
+# -----------------------------------------------
+#  Constantes de ambiente - lidas de src.config
+#  (configurar_diretorio_dados ja rodou no import)
+# -----------------------------------------------
+
+SCRIPT_DIR               = _cfg.SCRIPT_DIR
+APP_DIR                  = _cfg.APP_DIR
+BASE_DIR                 = _cfg.BASE_DIR
+PROJECT_DIR              = _cfg.PROJECT_DIR
+RELATORIOS_DIR           = _cfg.RELATORIOS_DIR
+DEFAULT_APP_DATA_DIR     = _cfg.DEFAULT_APP_DATA_DIR
+FALLBACK_APP_DATA_DIR    = _cfg.FALLBACK_APP_DATA_DIR
+LEGACY_DB_PATH           = _cfg.LEGACY_DB_PATH
+LOGO_PATH                = _cfg.LOGO_PATH
+APP_USER_MODEL_ID        = _cfg.APP_USER_MODEL_ID
+SYNC_CONFIG_SCHEMA_VERSION = _cfg.SYNC_CONFIG_SCHEMA_VERSION
+SYNC_DOCUMENT_FIELDS     = _cfg.SYNC_DOCUMENT_FIELDS
+
+# Mutaveis: atualizados por configurar_diretorio_dados()
+APP_DATA_DIR = _cfg.APP_DATA_DIR
+DB_PATH      = _cfg.DB_PATH
+LOCK_PATH    = _cfg.LOCK_PATH
 
 
 def _diretorio_gravavel(caminho_dir):
-    try:
-        os.makedirs(caminho_dir, exist_ok=True)
-        arquivo_teste = os.path.join(caminho_dir, f".write_test_{os.getpid()}_{time.time_ns()}.tmp")
-        with open(arquivo_teste, "w", encoding="utf-8") as f:
-            f.write("ok")
-        try:
-            os.remove(arquivo_teste)
-        except OSError:
-            pass
-        return True
-    except OSError:
-        return False
+    """Delega para src.config."""
+    return _cfg._diretorio_gravavel(caminho_dir)
 
 
 def configurar_diretorio_dados():
+    """Delega para src.config e sincroniza os globals deste modulo."""
     global APP_DATA_DIR, DB_PATH, LOCK_PATH
-
-    dir_original = APP_DATA_DIR
-    dir_escolhido = None
-    for candidato in (APP_DATA_DIR, FALLBACK_APP_DATA_DIR, BASE_DIR):
-        if _diretorio_gravavel(candidato):
-            dir_escolhido = candidato
-            break
-
-    if not dir_escolhido:
-        dir_escolhido = BASE_DIR
-
-    APP_DATA_DIR = dir_escolhido
-    DB_PATH = os.path.join(APP_DATA_DIR, "faturamento.db")
-    LOCK_PATH = os.path.join(APP_DATA_DIR, ".sistema_faturamento.lock")
-
-    # Se o AppData estiver sem permissao de escrita, migra o banco para pasta local.
-    if APP_DATA_DIR != dir_original:
-        origem_db = os.path.join(dir_original, "faturamento.db")
-        if os.path.exists(origem_db) and not os.path.exists(DB_PATH):
-            try:
-                shutil.copy2(origem_db, DB_PATH)
-            except OSError:
-                pass
+    _cfg.configurar_diretorio_dados()
+    APP_DATA_DIR = _cfg.APP_DATA_DIR
+    DB_PATH      = _cfg.DB_PATH
+    LOCK_PATH    = _cfg.LOCK_PATH
 
 
 configurar_diretorio_dados()
 
 
 def configurar_cache_matplotlib():
-    cache_dir = os.path.join(APP_DATA_DIR, "matplotlib")
-    if _diretorio_gravavel(cache_dir):
-        os.environ["MPLCONFIGDIR"] = cache_dir
+    """Delega para src.config."""
+    _cfg.configurar_cache_matplotlib()
 
 
 configurar_cache_matplotlib()
@@ -1620,184 +1588,48 @@ def gerar_excel(data_inicial=None, data_final=None, exibir_mensagem=True):
         return _falha(msg_erro)
     if df.empty:
         return _falha(
-            f"Não há documentos para o período selecionado ({data_inicial.strftime('%d/%m/%Y')} a {data_final.strftime('%d/%m/%Y')})."
+            f"Não há documentos para o período selecionado"
+            f" ({data_inicial.strftime('%d/%m/%Y')} a {data_final.strftime('%d/%m/%Y')})."
         )
 
     df = df.sort_values(["data_emissao", "numero"], ascending=[True, True])
-    df["numero_exibicao"] = df.apply(
-        lambda r: _numero_documento_exibicao(r["tipo"], r["numero"], r.get("numero_original", ""), r.get("data_emissao", "")),
-        axis=1,
-    )
-    df["Concat"] = df["numero_exibicao"].astype(str) + " " + df["tipo"].astype(str)
-    # Usa a data de competencia ja validada para evitar coluna "Mes Referencia" vazia no Excel.
     df["competencia_excel"] = df["data_competencia"]
+    colunas_base = [
+        "data_emissao", "competencia_excel", "numero", "numero_original_num",
+        "tipo", "frete", "valor_inicial", "valor_final", "status",
+    ]
+    df_base = df[colunas_base].copy()
 
-    # Remove arquivo anterior se existir
     pasta_saida = obter_pasta_saida_relatorios()
     nome = os.path.join(pasta_saida, "Faturamento_AC.xlsx")
     for antigo in glob.glob(os.path.join(pasta_saida, "Faturamento_AC*.xlsx")):
         try:
             if os.path.exists(antigo):
                 os.remove(antigo)
-        except (OSError, PermissionError) as e:
+        except (OSError, PermissionError):
             try:
                 os.rename(antigo, antigo + ".bak")
-            except:
+            except Exception:
                 pass
 
-    colunas_base = [
-        "data_emissao",
-        "competencia_excel",
-        "numero",
-        "numero_original_num",
-        "tipo",
-        "frete",
-        "valor_inicial",
-        "valor_final",
-        "status",
-    ]
+    resultado = escrever_excel_faturamento(df_base, nome)
+    if not resultado["ok"]:
+        return _falha(f"Erro ao gerar o relatório: {resultado['erro']}", erro=True)
 
-    df_base = df[colunas_base].copy()
-
-    def montar_df_relatorio(df_in, usar_numero_real_nf=False):
-        dados = df_in.copy()
-        dados["numero_doc"] = dados.apply(
-            lambda r: _numero_documento_exibicao(r["tipo"], r["numero"], r.get("numero_original", ""), r.get("data_emissao", "")),
-            axis=1,
+    if exibir_mensagem:
+        messagebox.showinfo(
+            "Excel",
+            f"Relatório gerado com {resultado['total_documentos']} documento(s) no período"
+            f" {data_inicial.strftime('%d/%m/%Y')} a {data_final.strftime('%d/%m/%Y')}\n\n"
+            f"Abas: Faturamento AC e Faturamento AC 2\nArquivo: {nome}",
         )
-        dados["numero_doc"] = dados["numero_doc"].astype(str).str.strip()
-        dados = dados[dados["numero_doc"] != ""].copy()
-        dados["numero_doc_ordem"] = pd.to_numeric(dados["numero_doc"], errors="coerce")
-        dados["numero_doc"] = dados.apply(
-            lambda r: int(r["numero_doc_ordem"]) if pd.notna(r["numero_doc_ordem"]) else r["numero_doc"],
-            axis=1,
-        )
-        dados["numero_ordem"] = pd.to_numeric(dados["numero"], errors="coerce")
-        dados["numero_doc_ordem"] = dados["numero_doc_ordem"].fillna(dados["numero_ordem"])
-        dados["Concat"] = dados["numero_doc"].astype(str) + " " + dados["tipo"].astype(str)
-        dados = dados.sort_values(["data_emissao", "numero_doc_ordem", "numero_doc"], ascending=[True, True, True])
-
-        dados = dados[
-            [
-                "data_emissao",
-                "competencia_excel",
-                "numero_doc",
-                "tipo",
-                "Concat",
-                "frete",
-                "valor_inicial",
-                "valor_final",
-                "status",
-            ]
-        ]
-
-        dados.columns = [
-            "Data Emissao",
-            "Mes Referencia",
-            "Numero Doc",
-            "Tipo Doc",
-            "Concat",
-            "Frete",
-            "Valor Inicial",
-            "Valor Final",
-            "Status",
-        ]
-        return dados
-
-    df_relatorio_1 = montar_df_relatorio(df_base, usar_numero_real_nf=True)
-    df_relatorio_2 = montar_df_relatorio(df_base, usar_numero_real_nf=True)
-
-    try:
-        with pd.ExcelWriter(nome, engine="openpyxl") as writer:
-            nome_aba_1 = "Faturamento AC"
-            nome_aba_2 = "Faturamento AC 2"
-            df_relatorio_1.to_excel(writer, index=False, startcol=1, sheet_name=nome_aba_1)
-            df_relatorio_2.to_excel(writer, index=False, startcol=1, sheet_name=nome_aba_2)
-
-            def formatar_aba(nome_aba, df_aba):
-                ws = writer.sheets[nome_aba]
-                ws.sheet_view.showGridLines = False
-                ws.freeze_panes = "B2"
-
-                ultima_linha = len(df_aba) + 1
-                linha_inicial = 1
-                col_inicial = 2  # B
-                col_final = 10   # J
-
-                cor_cabecalho = PatternFill("solid", fgColor="1F4E78")
-                fonte_cabecalho = Font(color="FFFFFF", bold=True)
-                cor_cancelado = PatternFill("solid", fgColor="F8D7DA")
-                cor_b_dados = PatternFill("solid", fgColor="E6E6E6")
-                cor_f_dados = PatternFill("solid", fgColor="FFF2CC")
-                borda_fina = Border(
-                    left=Side(style="thin", color="D9D9D9"),
-                    right=Side(style="thin", color="D9D9D9"),
-                    top=Side(style="thin", color="D9D9D9"),
-                    bottom=Side(style="thin", color="D9D9D9"),
-                )
-
-                for col in range(col_inicial, col_final + 1):
-                    celula = ws.cell(row=1, column=col)
-                    celula.fill = cor_cabecalho
-                    celula.font = fonte_cabecalho
-                    celula.alignment = Alignment(horizontal="center", vertical="center")
-
-                for row in range(linha_inicial, ultima_linha + 1):
-                    for col in range(col_inicial, col_final + 1):
-                        ws.cell(row=row, column=col).border = borda_fina
-
-                for row in range(2, ultima_linha + 1):
-                    for col in range(col_inicial, col_final + 1):
-                        ws.cell(row=row, column=col).alignment = Alignment(horizontal="center", vertical="center")
-
-                    ws[f"B{row}"].fill = cor_b_dados
-                    ws[f"F{row}"].fill = cor_f_dados
-                    # Coluna G = Frete. Mantém alinhamento à esquerda para leitura sem corte.
-                    ws[f"G{row}"].alignment = Alignment(horizontal="left", vertical="center")
-
-                    status_valor = str(ws[f"J{row}"].value or "").upper()
-                    if ("CANCELADO" in status_valor) or ("SUBSTITUIDO" in status_valor):
-                        for col in range(col_inicial, col_final + 1):
-                            ws.cell(row=row, column=col).fill = cor_cancelado
-
-                    ws[f"B{row}"].number_format = "DD/MM/YYYY"
-                    ws[f"C{row}"].number_format = '[$-pt-BR]mmmm/yyyy'
-                    ws[f"D{row}"].number_format = "0"
-                    ws[f"H{row}"].number_format = "R$ #,##0.00"
-                    ws[f"I{row}"].number_format = "R$ #,##0.00"
-
-                for col in range(col_inicial, col_final + 1):
-                    letra_coluna = ws.cell(row=1, column=col).column_letter
-                    maior = 0
-                    for row in range(1, ultima_linha + 1):
-                        valor = ws.cell(row=row, column=col).value
-                        tamanho = len(str(valor)) if valor is not None else 0
-                        if tamanho > maior:
-                            maior = tamanho
-                    ws.column_dimensions[letra_coluna].width = min(maior + 2, 45)
-                # Coluna G (Frete): largura mínima para acomodar INTERCOMPANY sem corte.
-                ws.column_dimensions["G"].width = max(float(ws.column_dimensions["G"].width or 0), 18.0)
-
-            formatar_aba(nome_aba_1, df_relatorio_1)
-            formatar_aba(nome_aba_2, df_relatorio_2)
-
-        if exibir_mensagem:
-            messagebox.showinfo(
-                "Excel",
-                f"Relatório gerado com {len(df_relatorio_1)} documento(s) no período {data_inicial.strftime('%d/%m/%Y')} a {data_final.strftime('%d/%m/%Y')}\n\nAbas: Faturamento AC e Faturamento AC 2\nArquivo: {nome}",
-            )
-        return {
-            "ok": True,
-            "mensagem": "",
-            "arquivo": nome,
-            "total_documentos": int(len(df_relatorio_1)),
-            "periodo": (
-                data_inicial.strftime("%d/%m/%Y"),
-                data_final.strftime("%d/%m/%Y"),
-            ),
-        }
-    except Exception as e:
-        return _falha(f"Erro ao gerar o relatório: {e}", erro=True)
+    return {
+        "ok": True,
+        "mensagem": "",
+        "arquivo": nome,
+        "total_documentos": resultado["total_documentos"],
+        "periodo": (data_inicial.strftime("%d/%m/%Y"), data_final.strftime("%d/%m/%Y")),
+    }
 
 
 # ------------------------
@@ -2540,64 +2372,11 @@ def abrir_busca_documentos():
     ctk.CTkButton(dialog, text="Buscar", command=buscar, width=200).pack(pady=6)
 
 
-def _competencia_para_data(comp_str):
-    try:
-        partes = str(comp_str).lower().split("/")
-        if len(partes) == 2:
-            mes_nome = normalizar_texto(partes[0].strip()).lower()
-            ano = int(partes[1].strip())
-            mes_idx = MESES.index(mes_nome) + 1
-            return datetime(ano, mes_idx, 1)
-    except Exception:
-        return None
-    return None
-
+# ─── _competencia_para_data  →  src/utils.py
 
 def _obter_dataframe_dashboard_filtrado():
     data_inicial, data_final = obter_periodo_dashboard(silencioso=True)
-    if data_inicial is None or data_final is None:
-        return None, None, None
-
-    if data_inicial > data_final:
-        return pd.DataFrame(), data_inicial, data_final
-
-    conn = obter_conexao_banco()
-    df = pd.read_sql_query(
-        """
-        SELECT id, tipo, numero, numero_original, valor_inicial, valor_final, status, competencia
-        FROM documentos
-        """,
-        conn,
-    )
-    conn.close()
-
-    if df.empty:
-        return df, data_inicial, data_final
-
-    df["data_competencia"] = df["competencia"].apply(_competencia_para_data)
-    df = df.dropna(subset=["data_competencia"])
-    df = df[(df["data_competencia"] >= data_inicial) & (df["data_competencia"] <= data_final)].copy()
-
-    if df.empty:
-        return df, data_inicial, data_final
-
-    df["numero"] = pd.to_numeric(df["numero"], errors="coerce")
-    df["numero_original_num"] = pd.to_numeric(df.get("numero_original"), errors="coerce")
-    df["valor_inicial"] = pd.to_numeric(df["valor_inicial"], errors="coerce")
-    df["valor_final"] = pd.to_numeric(df["valor_final"], errors="coerce")
-    df["tipo"] = df["tipo"].astype(str).str.upper()
-    df["status"] = df["status"].astype(str)
-    df["numero_exibicao"] = df.apply(
-        lambda r: _numero_documento_exibicao(r["tipo"], r["numero"], r.get("numero_original", ""), r.get("data_emissao", "")),
-        axis=1,
-    )
-
-    df["chave_documento"] = df.apply(
-        lambda r: _chave_documento_compativel(r["tipo"], r["numero"], r.get("numero_original", "")),
-        axis=1,
-    )
-    df = df.sort_values(["id"]).drop_duplicates(subset=["chave_documento"], keep="last")
-    return df, data_inicial, data_final
+    return obter_dataframe_dashboard(data_inicial, data_final)
 
 
 def _garantir_matplotlib_dashboard():
@@ -2731,235 +2510,9 @@ def _renderizar_figura_dashboard(chave, fig):
     cfg["placeholder"] = None
 
 
-def _criar_figura_faturamento_periodo(df):
-    plt = dashboard_chart_state["plt"]
-    from matplotlib.colors import LinearSegmentedColormap
-    from matplotlib.patches import FancyBboxPatch, Rectangle
+# ─── criar_figura_faturamento_periodo  →  src/dashboard.py
 
-    fig, ax = plt.subplots(figsize=(5.4, 3.0), dpi=100)
-    fig.patch.set_facecolor(UI_THEME["chart_bg"])
-    ax.set_facecolor(UI_THEME["chart_plot_bg"])
-
-    resumo = (
-        df.groupby(df["data_competencia"].dt.to_period("M"))["valor_final"]
-        .sum()
-        .sort_index()
-        .reset_index()
-    )
-    resumo = resumo[resumo["valor_final"].abs() > 0.0001].copy()
-
-    if resumo.empty:
-        ax.set_title("Faturamento por período", fontsize=11, fontweight="bold", color=UI_THEME["text_primary"], pad=8)
-        ax.set_xticks([])
-        ax.set_yticks([])
-        for spine in ax.spines.values():
-            spine.set_visible(False)
-        ax.text(
-            0.5,
-            0.5,
-            "Sem meses com faturamento para o período.",
-            transform=ax.transAxes,
-            ha="center",
-            va="center",
-            fontsize=10,
-            color=UI_THEME["text_secondary"],
-        )
-        fig.tight_layout(pad=1.0)
-        return fig
-
-    meses_abrev = ["Jan", "Fev", "Mar", "Abr", "Mai", "Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez"]
-    resumo["periodo_label"] = resumo["data_competencia"].dt.to_timestamp().apply(
-        lambda dt: f"{meses_abrev[dt.month - 1]}/{dt.strftime('%y')}"
-    )
-    resumo["idx"] = range(len(resumo))
-    valores = [float(v) for v in resumo["valor_final"].fillna(0).tolist()]
-    indices = resumo["idx"].tolist()
-    max_valor = max(valores) if valores else 0.0
-    limite_superior = max(max_valor * 1.20, 1.0)
-    largura_barra = 0.46
-
-    def _misturar_cor(cor_a, cor_b, t):
-        c1 = _hex_para_rgb(cor_a)
-        c2 = _hex_para_rgb(cor_b)
-        mix = tuple(int(c1[i] + (c2[i] - c1[i]) * t) for i in range(3))
-        return _rgb_para_hex(mix)
-
-    def _gerar_cores_gradiente(qtd):
-        if qtd <= 0:
-            return []
-        if qtd == 1:
-            return [_misturar_cor(UI_THEME["chart_bar_secondary"], UI_THEME["chart_bar_primary"], 0.6)]
-        return [
-            _misturar_cor(UI_THEME["chart_bar_secondary"], UI_THEME["chart_bar_primary"], i / (qtd - 1))
-            for i in range(qtd)
-        ]
-
-    def _fmt_brl_exato(v):
-        return formatar_moeda_brl_exata(v)
-
-    def _calcular_tendencia_linear(valores_seq):
-        n = len(valores_seq)
-        if n < 2:
-            return []
-        xs = list(range(n))
-        soma_x = sum(xs)
-        soma_y = sum(valores_seq)
-        soma_x2 = sum(x * x for x in xs)
-        soma_xy = sum(x * y for x, y in zip(xs, valores_seq))
-        denominador = (n * soma_x2) - (soma_x * soma_x)
-        if denominador == 0:
-            return []
-        m = ((n * soma_xy) - (soma_x * soma_y)) / denominador
-        b = (soma_y - (m * soma_x)) / n
-        return [(m * x) + b for x in xs]
-
-    ax.set_title("Faturamento por período", fontsize=11, fontweight="bold", color=UI_THEME["text_primary"], pad=8)
-    ax.set_xlabel("")
-    ax.set_ylabel("")
-    ax.set_xticks(indices)
-    ax.set_xticklabels(resumo["periodo_label"], rotation=0, ha="center", color=UI_THEME["text_secondary"], fontsize=9.5, fontweight="bold")
-    ax.set_yticks([])
-    ax.tick_params(axis="y", left=False, labelleft=False)
-    ax.tick_params(axis="x", pad=6)
-    ax.grid(False)
-    ax.spines["top"].set_visible(False)
-    ax.spines["right"].set_visible(False)
-    ax.spines["left"].set_visible(False)
-    ax.spines["bottom"].set_visible(False)
-    ax.set_xlim(-0.5, len(indices) - 0.5)
-    ax.set_ylim(0, limite_superior)
-    ax.margins(x=0.08)
-
-    fundo_topo = _misturar_cor(UI_THEME["chart_plot_bg"], "#FFFFFF", 0.06)
-    fundo_base = _misturar_cor(UI_THEME["chart_plot_bg"], "#000000", 0.08)
-    gradiente_bg = LinearSegmentedColormap.from_list("dashboard_bg_grad", [fundo_topo, fundo_base])
-    ax.imshow(
-        [[0], [1]],
-        extent=[-0.6, len(indices) - 0.4, 0, limite_superior],
-        aspect="auto",
-        cmap=gradiente_bg,
-        interpolation="bicubic",
-        alpha=0.52,
-        zorder=0,
-    )
-
-    cores = _gerar_cores_gradiente(len(valores))
-    for idx_barra, (pos_x, altura, cor) in enumerate(zip(indices, valores, cores)):
-        cor_base = cor
-        if idx_barra == len(indices) - 1:
-            cor_base = _misturar_cor(cor_base, UI_THEME["accent"], 0.34)
-
-        esquerda = pos_x - (largura_barra / 2)
-        barra = FancyBboxPatch(
-            (esquerda, 0),
-            largura_barra,
-            max(altura, 0.0001),
-            boxstyle=f"round,pad=0,rounding_size={largura_barra * 0.20}",
-            linewidth=0,
-            facecolor=cor_base,
-            edgecolor=cor_base,
-            alpha=0.90,
-            zorder=2,
-        )
-        ax.add_patch(barra)
-
-        brilho_topo = Rectangle(
-            (esquerda, max(altura * 0.42, 0)),
-            largura_barra,
-            max(altura * 0.58, 0.0001),
-            linewidth=0,
-            facecolor=_misturar_cor(cor_base, "#FFFFFF", 0.28),
-            alpha=0.36,
-            zorder=2.25,
-        )
-        brilho_topo.set_clip_path(barra)
-        ax.add_patch(brilho_topo)
-
-    tendencia = _calcular_tendencia_linear(valores)
-    if tendencia:
-        ax.plot(
-            indices,
-            tendencia,
-            color=UI_THEME["text_secondary"],
-            linewidth=1.1,
-            linestyle="--",
-            alpha=0.45,
-            zorder=3,
-        )
-
-    for pos_x, valor in zip(indices, valores):
-        if valor <= 0:
-            continue
-        y_texto = valor * 0.52
-        alinhamento_vertical = "center"
-        cor_texto = UI_THEME["on_accent"]
-        tamanho_fonte = 8.5
-        if valor < (limite_superior * 0.11):
-            y_texto = valor + (limite_superior * 0.02)
-            alinhamento_vertical = "bottom"
-            cor_texto = UI_THEME["text_primary"]
-            tamanho_fonte = 8
-        ax.text(
-            pos_x,
-            y_texto,
-            _fmt_brl_exato(valor),
-            ha="center",
-            va=alinhamento_vertical,
-            fontsize=tamanho_fonte + 0.6,
-            color=cor_texto,
-            fontweight="bold",
-            zorder=4,
-        )
-
-    fig.tight_layout(pad=1.0)
-    return fig
-
-
-def _criar_figura_comparativo_tipos(df):
-    plt = dashboard_chart_state["plt"]
-    fig, ax = plt.subplots(figsize=(5.4, 3.0), dpi=100)
-    fig.patch.set_facecolor(UI_THEME["chart_bg"])
-    ax.set_facecolor(UI_THEME["chart_plot_bg"])
-
-    total_nf = int((df["tipo"] == "NF").sum())
-    total_cte = int((df["tipo"] == "CTE").sum())
-    total_cancelados = int(df["status"].str.upper().str.contains("CANCELADO", na=False).sum())
-
-    labels = ["NF", "CTE", "Cancelados"]
-    valores = [total_nf, total_cte, total_cancelados]
-    cores = [
-        UI_THEME["metric_nf_value"],
-        UI_THEME["metric_cte_value"],
-        UI_THEME["chart_cancelados"],
-    ]
-
-    barras = ax.bar(labels, valores, color=cores, edgecolor=UI_THEME["chart_axis"], linewidth=0.6, width=0.55, zorder=2)
-    ax.set_title("Comparativo de documentos", fontsize=11, fontweight="bold", color=UI_THEME["text_primary"], pad=8)
-    ax.set_ylabel("Quantidade", fontsize=9, color=UI_THEME["chart_axis"])
-    ax.tick_params(axis="x", colors=UI_THEME["chart_axis"])
-    ax.tick_params(axis="y", colors=UI_THEME["chart_axis"])
-    ax.grid(axis="y", linestyle="--", linewidth=0.8, alpha=0.28, color=UI_THEME["chart_grid"], zorder=1)
-    ax.spines["top"].set_visible(False)
-    ax.spines["right"].set_visible(False)
-    ax.spines["left"].set_color(UI_THEME["chart_grid"])
-    ax.spines["bottom"].set_color(UI_THEME["chart_grid"])
-    ax.set_ylim(0, max(valores + [1]) * 1.22)
-
-    for barra, valor in zip(barras, valores):
-        ax.text(
-            barra.get_x() + barra.get_width() / 2,
-            barra.get_height() + 0.05,
-            f"{valor}",
-            ha="center",
-            va="bottom",
-            fontsize=11,
-            color=UI_THEME["text_primary"],
-            fontweight="bold",
-        )
-
-    fig.tight_layout(pad=1.0)
-    return fig
-
+# ─── criar_figura_comparativo_tipos  →  src/dashboard.py
 
 def _atualizar_graficos_dashboard(df, data_inicial=None, data_final=None):
     if not dashboard_chart_widgets:
@@ -2987,8 +2540,9 @@ def _atualizar_graficos_dashboard(df, data_inicial=None, data_final=None):
         return
 
     try:
-        fig_faturamento = _criar_figura_faturamento_periodo(df)
-        fig_comparativo = _criar_figura_comparativo_tipos(df)
+        plt_obj = dashboard_chart_state["plt"]
+        fig_faturamento = criar_figura_faturamento_periodo(df, plt_obj, UI_THEME)
+        fig_comparativo = criar_figura_comparativo_tipos(df, plt_obj, UI_THEME)
     except Exception as exc:
         _mostrar_placeholder_grafico("faturamento", f"Falha ao desenhar gráfico.\n{exc}")
         _mostrar_placeholder_grafico("comparativo", f"Falha ao desenhar gráfico.\n{exc}")
@@ -4299,34 +3853,7 @@ def _criar_card(parent, fg_color=None, corner_radius=18, border_width=1):
     )
 
 
-def _normalizar_hex_cor(cor):
-    if isinstance(cor, (tuple, list)) and cor:
-        cor = cor[0]
-    cor = str(cor).strip()
-    if not cor.startswith("#"):
-        return "#000000"
-    if len(cor) == 4:
-        return "#" + "".join(ch * 2 for ch in cor[1:])
-    if len(cor) != 7:
-        return "#000000"
-    return cor
-
-
-def _hex_para_rgb(cor):
-    c = _normalizar_hex_cor(cor)
-    return tuple(int(c[i:i + 2], 16) for i in (1, 3, 5))
-
-
-def _rgb_para_hex(rgb):
-    r, g, b = [max(0, min(255, int(v))) for v in rgb]
-    return f"#{r:02x}{g:02x}{b:02x}"
-
-
-def _interpolar_cor(cor_a, cor_b, t):
-    a = _hex_para_rgb(cor_a)
-    b = _hex_para_rgb(cor_b)
-    return _rgb_para_hex(tuple(a[i] + (b[i] - a[i]) * t for i in range(3)))
-
+# ─── _normalizar_hex_cor/_hex_para_rgb/_rgb_para_hex/_interpolar_cor  →  src/utils.py
 
 def _animar_estilo_botao(botao, alvo_fg, alvo_texto, alvo_borda, passos=7, delay_ms=16):
     if ui_animations_paused or scroll_dragging:

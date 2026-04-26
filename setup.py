@@ -52,6 +52,16 @@ executavel = Executable(
 
 # Dependencias
 packages = [
+    # pacote local — módulos extraídos em src/
+    "src",
+    "src.banco",
+    "src.config",
+    "src.dashboard",
+    "src.importacao",
+    "src.relatorios",
+    "src.sync",
+    "src.utils",
+    # dependências externas
     "customtkinter",
     "fitz",
     "pandas",
