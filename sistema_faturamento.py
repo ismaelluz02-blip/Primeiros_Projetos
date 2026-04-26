@@ -387,6 +387,93 @@ def centralizar_janela(janela, largura, altura):
     janela.geometry(f"{largura}x{altura}+{x}+{y}")
 
 
+# ─── Suporte a múltiplos monitores ─────────────────────────────────────────
+
+def _obter_area_util_monitor(cx, cy):
+    """Retorna (left, top, largura, altura) da area util do monitor em (cx, cy)."""
+    try:
+        import ctypes
+
+        class _POINT(ctypes.Structure):
+            _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
+
+        class _RECT(ctypes.Structure):
+            _fields_ = [("left", ctypes.c_long), ("top", ctypes.c_long),
+                        ("right", ctypes.c_long), ("bottom", ctypes.c_long)]
+
+        class _MONITORINFO(ctypes.Structure):
+            _fields_ = [("cbSize", ctypes.c_ulong), ("rcMonitor", _RECT),
+                        ("rcWork", _RECT), ("dwFlags", ctypes.c_ulong)]
+
+        pt = _POINT(int(cx), int(cy))
+        hmon = ctypes.windll.user32.MonitorFromPoint(pt, 2)  # MONITOR_DEFAULTTONEAREST
+        info = _MONITORINFO()
+        info.cbSize = ctypes.sizeof(_MONITORINFO)
+        ctypes.windll.user32.GetMonitorInfoW(hmon, ctypes.byref(info))
+        w = info.rcWork.right - info.rcWork.left
+        h = info.rcWork.bottom - info.rcWork.top
+        return info.rcWork.left, info.rcWork.top, w, h
+    except Exception:
+        return None, None, None, None
+
+
+_monitor_anterior = {}
+_ajuste_pendente_id = None
+
+
+def _aplicar_ajuste_monitor():
+    """Chamado com debounce — verifica se janela cabe no monitor atual."""
+    global _monitor_anterior, _ajuste_pendente_id
+    _ajuste_pendente_id = None
+    try:
+        app.update_idletasks()
+        wx = app.winfo_x()
+        wy = app.winfo_y()
+        ww = app.winfo_width()
+        wh = app.winfo_height()
+        cx = wx + ww // 2
+        cy = wy + wh // 2
+
+        ml, mt, mw, mh = _obter_area_util_monitor(cx, cy)
+        if mw is None:
+            return
+
+        chave = (ml, mt, mw, mh)
+        if chave == _monitor_anterior.get("chave"):
+            return
+        _monitor_anterior["chave"] = chave
+
+        # Redimensiona apenas se a janela não cabe no monitor de destino
+        nova_w = max(860, min(1120, mw - 80))
+        nova_h = max(650, min(860, mh - 90))
+        nova_w = min(nova_w, mw - 10)
+        nova_h = min(nova_h, mh - 10)
+
+        precisa_resize = ww > mw - 8 or wh > mh - 8
+        if not precisa_resize:
+            return
+
+        # Centraliza no novo monitor
+        novo_x = ml + (mw - nova_w) // 2
+        novo_y = mt + (mh - nova_h) // 2
+        app.geometry(f"{nova_w}x{nova_h}+{novo_x}+{novo_y}")
+    except Exception:
+        pass
+
+
+def _on_janela_configure(event):
+    """Debounce de 400 ms no evento Configure para detectar troca de monitor."""
+    global _ajuste_pendente_id
+    try:
+        if event.widget is not app:
+            return
+        if _ajuste_pendente_id is not None:
+            app.after_cancel(_ajuste_pendente_id)
+        _ajuste_pendente_id = app.after(400, _aplicar_ajuste_monitor)
+    except Exception:
+        pass
+
+
 def manter_interface_responsiva():
     try:
         if "app" in globals() and app.winfo_exists():
@@ -1658,6 +1745,7 @@ class App(ctk.CTk):
         self.title("Sistema de Faturamento - Horizonte Logística")
         self.resizable(True, True)
         aplicar_icone_aplicacao(self)
+        self.bind("<Configure>", _on_janela_configure)
 
     def registrar_tela(self, nome_tela, frame_tela):
         self.screens[nome_tela] = frame_tela
@@ -1674,6 +1762,16 @@ class App(ctk.CTk):
         self.current_screen = nome_tela
         _configurar_nav_tela_ativa(nome_tela)
 
+
+# DPI awareness por monitor (evita janela borrada ao arrastar entre telas)
+try:
+    import ctypes as _ctypes
+    try:
+        _ctypes.windll.shcore.SetProcessDpiAwareness(2)   # Per-monitor DPI aware v2
+    except Exception:
+        _ctypes.windll.user32.SetProcessDPIAware()        # Fallback
+except Exception:
+    pass
 
 app = App()
 
@@ -3070,13 +3168,31 @@ def atualizar_dashboard():
         return
     dashboard_update_running = True
 
-    def atualizar_resumo(total_inicial=0.0, total_final=0.0, total_docs=0, total_nf=0, total_cte=0, total_cancelados=0):
+    def _texto_variacao(atual, anterior):
+        """Retorna texto de variacao ex: '▲ 12,3%' ou '▼ 5,1%' ou '' se sem dados."""
+        if anterior is None or anterior == 0:
+            return ""
+        pct = (atual - anterior) / abs(anterior) * 100
+        seta = "▲" if pct >= 0 else "▼"
+        return f"{seta} {abs(pct):.1f}% vs anterior"
+
+    def atualizar_resumo(total_inicial=0.0, total_final=0.0, total_docs=0, total_nf=0, total_cte=0, total_cancelados=0,
+                         anterior_inicial=None, anterior_final=None):
         total_inicial_valor_label.configure(text=formatar_moeda_brl(total_inicial))
         total_final_valor_label.configure(text=formatar_moeda_brl(total_final))
         total_documentos_label.configure(text=f"{total_docs}")
         nf_label.configure(text=f"{total_nf}")
         cte_label.configure(text=f"{total_cte}")
         cancelados_label.configure(text=f"{total_cancelados}")
+
+        # Variacao periodo anterior
+        txt_ini = _texto_variacao(total_inicial, anterior_inicial)
+        cor_ini = UI_THEME["success_text"] if txt_ini.startswith("▲") else (UI_THEME["danger_text"] if txt_ini.startswith("▼") else UI_THEME["text_secondary"])
+        variacao_inicial_label.configure(text=txt_ini, text_color=cor_ini)
+
+        txt_fin = _texto_variacao(total_final, anterior_final)
+        cor_fin = UI_THEME["success_text"] if txt_fin.startswith("▲") else (UI_THEME["danger_text"] if txt_fin.startswith("▼") else UI_THEME["text_secondary"])
+        variacao_final_label.configure(text=txt_fin, text_color=cor_fin)
 
         diferenca = total_inicial - total_final
         if diferenca > 0:
@@ -3125,6 +3241,21 @@ def atualizar_dashboard():
         total_cte = int((df["tipo"] == "CTE").sum())
         total_cancelados = int(df["status"].str.upper().str.contains("CANCELADO", na=False).sum())
 
+        # Calcula periodo anterior para variacao
+        anterior_inicial = None
+        anterior_final = None
+        try:
+            from datetime import timedelta
+            duracao = (data_final - data_inicial).days + 1
+            prev_fim = data_inicial - timedelta(days=1)
+            prev_ini = prev_fim - timedelta(days=duracao - 1)
+            df_prev, _, _ = obter_dataframe_dashboard(prev_ini, prev_fim)
+            if df_prev is not None and not df_prev.empty:
+                anterior_inicial = float(df_prev["valor_inicial"].fillna(0).sum())
+                anterior_final = float(df_prev["valor_final"].fillna(0).sum())
+        except Exception:
+            pass
+
         atualizar_resumo(
             float(total_inicial),
             float(total_final),
@@ -3132,6 +3263,8 @@ def atualizar_dashboard():
             total_nf,
             total_cte,
             total_cancelados,
+            anterior_inicial=anterior_inicial,
+            anterior_final=anterior_final,
         )
         _atualizar_graficos_dashboard(df, data_inicial, data_final)
     finally:
@@ -4617,6 +4750,7 @@ def _criar_bloco_metrica(parent, metric_key, titulo, valor_padrao):
 def _criar_resumo_periodo(parent):
     global total_inicial_valor_label, total_final_valor_label, diferenca_label
     global total_documentos_label, nf_label, cte_label, cancelados_label, cancelados_card
+    global variacao_inicial_label, variacao_final_label
 
     resumo_card = _criar_card(parent, corner_radius=20)
     resumo_card.pack(fill="x", padx=18, pady=(0, 16))
@@ -4639,19 +4773,44 @@ def _criar_resumo_periodo(parent):
         linha_valores, "initial", "Valor inicial", "R$ 0,00"
     )
     inicial_card.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
+    variacao_inicial_label = ctk.CTkLabel(
+        inicial_card,
+        text="",
+        font=ctk.CTkFont(family="Segoe UI", size=11),
+        text_color=UI_THEME["text_secondary"],
+    )
+    variacao_inicial_label.pack(pady=(0, 8))
 
     final_card, _, total_final_valor_label = _criar_bloco_metrica(
         linha_valores, "final", "Valor final", "R$ 0,00"
     )
     final_card.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
-
-    diferenca_label = ctk.CTkLabel(
-        resumo_card,
-        text="Diferença referente a impostos de NFS-e: R$ 0,00",
-        font=ctk.CTkFont(family="Segoe UI", size=13, weight="bold"),
+    variacao_final_label = ctk.CTkLabel(
+        final_card,
+        text="",
+        font=ctk.CTkFont(family="Segoe UI", size=11),
         text_color=UI_THEME["text_secondary"],
     )
-    diferenca_label.pack(fill="x", padx=20, pady=(6, 12))
+    variacao_final_label.pack(pady=(0, 8))
+
+    # Badge de diferença de impostos
+    diferenca_badge_frame = ctk.CTkFrame(
+        resumo_card,
+        fg_color=UI_THEME["surface_alt"],
+        corner_radius=10,
+        border_width=1,
+        border_color=UI_THEME["border"],
+    )
+    diferenca_badge_frame.pack(anchor="center", padx=20, pady=(6, 12))
+    ui_refs["diferenca_badge_frame"] = diferenca_badge_frame
+
+    diferenca_label = ctk.CTkLabel(
+        diferenca_badge_frame,
+        text="Diferenca referente a Impostos de NFS-e: R$ 0,00",
+        font=ctk.CTkFont(family="Segoe UI", size=12, weight="bold"),
+        text_color=UI_THEME["text_secondary"],
+    )
+    diferenca_label.pack(padx=16, pady=6)
 
     linha_metricas = ctk.CTkFrame(resumo_card, fg_color="transparent")
     linha_metricas.pack(fill="x", padx=18, pady=(0, 16))

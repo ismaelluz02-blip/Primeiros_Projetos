@@ -193,22 +193,32 @@ def criar_figura_faturamento_periodo(df, plt, theme):
 
     cores = _gerar_cores_gradiente(len(valores))
     for idx_barra, (pos_x, altura, cor) in enumerate(zip(indices, valores, cores)):
-        cor_base = cor
-        if idx_barra == len(indices) - 1:
-            cor_base = _misturar_cor(cor_base, theme["accent"], 0.34)
+        eh_atual = (idx_barra == len(indices) - 1)
+        cor_base = theme["accent"] if eh_atual else cor
+        larg = largura_barra * 1.12 if eh_atual else largura_barra
 
-        esquerda = pos_x - (largura_barra / 2)
+        esquerda = pos_x - (larg / 2)
         barra = FancyBboxPatch(
-            (esquerda, 0), largura_barra, max(altura, 0.0001),
-            boxstyle=f"round,pad=0,rounding_size={largura_barra * 0.20}",
-            linewidth=0, facecolor=cor_base, edgecolor=cor_base, alpha=0.90, zorder=2,
+            (esquerda, 0), larg, max(altura, 0.0001),
+            boxstyle=f"round,pad=0,rounding_size={larg * 0.20}",
+            linewidth=0, facecolor=cor_base, edgecolor=cor_base,
+            alpha=1.0 if eh_atual else 0.90, zorder=2,
         )
         ax.add_patch(barra)
 
+        # Halo de destaque no mês atual
+        if eh_atual:
+            halo = FancyBboxPatch(
+                (esquerda - 0.018, -limite_superior * 0.012), larg + 0.036, max(altura, 0.0001) + limite_superior * 0.024,
+                boxstyle=f"round,pad=0,rounding_size={larg * 0.22}",
+                linewidth=0, facecolor=cor_base, alpha=0.18, zorder=1.5,
+            )
+            ax.add_patch(halo)
+
         brilho_topo = Rectangle(
-            (esquerda, max(altura * 0.42, 0)), largura_barra, max(altura * 0.58, 0.0001),
-            linewidth=0, facecolor=_misturar_cor(cor_base, "#FFFFFF", 0.28),
-            alpha=0.36, zorder=2.25,
+            (esquerda, max(altura * 0.42, 0)), larg, max(altura * 0.58, 0.0001),
+            linewidth=0, facecolor=_misturar_cor(cor_base, "#FFFFFF", 0.32),
+            alpha=0.40 if eh_atual else 0.36, zorder=2.25,
         )
         brilho_topo.set_clip_path(barra)
         ax.add_patch(brilho_topo)
@@ -246,14 +256,25 @@ def criar_figura_faturamento_periodo(df, plt, theme):
 
 
 def criar_figura_comparativo_tipos(df, plt, theme):
-    """Cria e retorna a figura matplotlib de comparativo de tipos de documento."""
+    """Donut chart — NF vs CTE vs Cancelados."""
     fig, ax = plt.subplots(figsize=(5.4, 3.0), dpi=100)
     fig.patch.set_facecolor(theme["chart_bg"])
-    ax.set_facecolor(theme["chart_plot_bg"])
+    ax.set_facecolor(theme["chart_bg"])
 
     total_nf = int((df["tipo"] == "NF").sum())
     total_cte = int((df["tipo"] == "CTE").sum())
     total_cancelados = int(df["status"].str.upper().str.contains("CANCELADO", na=False).sum())
+    total = total_nf + total_cte + total_cancelados
+
+    ax.set_title("Comparativo de documentos", fontsize=11, fontweight="bold",
+                 color=theme["text_primary"], pad=8)
+
+    if total == 0:
+        ax.text(0.5, 0.5, "Sem documentos", transform=ax.transAxes,
+                ha="center", va="center", fontsize=10, color=theme["text_secondary"])
+        ax.axis("off")
+        fig.tight_layout(pad=1.0)
+        return fig
 
     labels = ["NF", "CTE", "Cancelados"]
     valores = [total_nf, total_cte, total_cancelados]
@@ -263,29 +284,53 @@ def criar_figura_comparativo_tipos(df, plt, theme):
         theme["chart_cancelados"],
     ]
 
-    barras = ax.bar(
-        labels, valores, color=cores,
-        edgecolor=theme["chart_axis"], linewidth=0.6, width=0.55, zorder=2,
+    # Remove fatias zero para evitar artefatos
+    dados = [(l, v, c) for l, v, c in zip(labels, valores, cores) if v > 0]
+    if not dados:
+        ax.axis("off")
+        fig.tight_layout(pad=1.0)
+        return fig
+
+    lbs, vals, cors = zip(*dados)
+
+    wedge_props = {"linewidth": 2.5, "edgecolor": theme["chart_bg"]}
+    wedges, _ = ax.pie(
+        vals,
+        colors=cors,
+        startangle=90,
+        wedgeprops=wedge_props,
+        radius=1.0,
     )
-    ax.set_title("Comparativo de documentos", fontsize=11, fontweight="bold", color=theme["text_primary"], pad=8)
-    ax.set_ylabel("Quantidade", fontsize=9, color=theme["chart_axis"])
-    ax.tick_params(axis="x", colors=theme["chart_axis"])
-    ax.tick_params(axis="y", colors=theme["chart_axis"])
-    ax.grid(axis="y", linestyle="--", linewidth=0.8, alpha=0.28, color=theme["chart_grid"], zorder=1)
-    ax.spines["top"].set_visible(False)
-    ax.spines["right"].set_visible(False)
-    ax.spines["left"].set_color(theme["chart_grid"])
-    ax.spines["bottom"].set_color(theme["chart_grid"])
-    ax.set_ylim(0, max(valores + [1]) * 1.22)
 
-    for barra, valor in zip(barras, valores):
-        ax.text(
-            barra.get_x() + barra.get_width() / 2,
-            barra.get_height() + 0.05,
-            f"{valor}",
-            ha="center", va="bottom",
-            fontsize=11, color=theme["text_primary"], fontweight="bold",
-        )
+    # Furo central — transforma em donut
+    centro = plt.Circle((0, 0), 0.58, color=theme["chart_bg"])
+    ax.add_patch(centro)
 
-    fig.tight_layout(pad=1.0)
+    # Texto central: total de documentos
+    ax.text(0, 0.10, str(total), ha="center", va="center",
+            fontsize=22, fontweight="bold", color=theme["text_primary"])
+    ax.text(0, -0.18, "docs", ha="center", va="center",
+            fontsize=9, color=theme["text_secondary"])
+
+    # Legenda lateral compacta
+    legenda_x = 1.22
+    legenda_y_inicio = 0.38
+    passo = 0.28
+    for i, (lbl, val, cor) in enumerate(zip(lbs, vals, cors)):
+        pct = val / total * 100
+        y = legenda_y_inicio - i * passo
+        ax.add_patch(plt.Circle((legenda_x - 0.13, y + 0.04), 0.07,
+                                color=cor, transform=ax.transData, zorder=5))
+        ax.text(legenda_x, y + 0.04, f"{lbl}  {val}",
+                ha="left", va="center", fontsize=10,
+                fontweight="bold", color=theme["text_primary"])
+        ax.text(legenda_x, y - 0.10, f"{pct:.1f}%",
+                ha="left", va="center", fontsize=8.5,
+                color=theme["text_secondary"])
+
+    ax.set_xlim(-1.4, 1.9)
+    ax.set_ylim(-1.2, 1.2)
+    ax.axis("equal")
+    ax.axis("off")
+    fig.tight_layout(pad=0.6)
     return fig
