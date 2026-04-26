@@ -70,6 +70,11 @@ from src.documentos import (
     _buscar_documento_existente_sync,
     register_on_change as _register_doc_on_change,
 )
+from src.sync import (
+    exportar_configuracoes_json,
+    importar_configuracoes_json,
+    _listar_documentos_alterados_para_sync,
+)
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 APP_DIR = os.path.dirname(sys.executable) if getattr(sys, "frozen", False) else SCRIPT_DIR
@@ -1767,104 +1772,85 @@ def importar_relatorio_ui():
         messagebox.showerror("Relatório", f"Falha ao importar relatório.\n\n{exc}")
 
 
-# ------------------------
-# SINCRONIZACAO OFFLINE
-# ------------------------
-
-def _documento_possui_alteracao_manual(row):
-    status_upper = str(row.get("status", "") or "").upper()
-    frete_upper = str(row.get("frete", "") or "").upper().strip()
-    return (
-        int(row.get("cancelado_manual", 0) or 0) == 1
-        or int(row.get("competencia_manual", 0) or 0) == 1
-        or int(row.get("frete_manual", 0) or 0) == 1
-        or int(row.get("frete_revisado_manual", 0) or 0) == 1
-        or frete_upper in {"INTERCOMPANY", "DELTA", "SPOT"}
-        or bool(row.get("valor_inicial_original") is not None)
-        or bool(row.get("valor_final_original") is not None)
-        or bool((row.get("status_original") or "").strip())
-        or "DOCUMENTO SUBSTITUIDO POR" in status_upper
-        or "DOCUMENTO SUBSTITUINDO DOCUMENTO" in status_upper
-    )
-
-
-def _listar_documentos_alterados_para_sync():
-    conn = obter_conexao_banco()
-    conn.row_factory = sqlite3.Row
-    cursor = conn.cursor()
-    cursor.execute(
-        """
-        SELECT
-            tipo, numero, numero_original, data_emissao,
-            valor_inicial, valor_final, frete, status, competencia,
-            valor_inicial_original, valor_final_original, status_original,
-            cancelado_manual, competencia_manual, frete_manual, frete_revisado_manual
-        FROM documentos
-        ORDER BY id ASC
-        """
-    )
-    docs = []
-    for row in cursor.fetchall():
-        item = dict(row)
-        if _documento_possui_alteracao_manual(item):
-            item["tipo"] = str(item.get("tipo", "")).upper().strip()
-            item["numero"] = int(item.get("numero") or 0)
-            item["numero_original"] = str(item.get("numero_original", "") or "").strip()
-            item["cancelado_manual"] = int(item.get("cancelado_manual") or 0)
-            item["competencia_manual"] = int(item.get("competencia_manual") or 0)
-            item["frete_manual"] = int(item.get("frete_manual") or 0)
-            item["frete_revisado_manual"] = int(item.get("frete_revisado_manual") or 0)
-            # Mantém payload enxuto, mas com campos suficientes para reproduzir alterações.
-            item = {campo: item.get(campo) for campo in SYNC_DOCUMENT_FIELDS}
-            docs.append(item)
-    conn.close()
-    return docs
-
-
-def exportar_configuracoes_json(caminho_arquivo):
-    documentos = _listar_documentos_alterados_para_sync()
-    payload = {
-        "metadata": {
-            "schema_version": SYNC_CONFIG_SCHEMA_VERSION,
-            "exportado_em": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
-            "formato": "configuracoes_sync_documentos_manuais",
-            "origem": {
-                "host": socket.gethostname(),
-                "usuario": getpass.getuser(),
-                "app_data_dir": APP_DATA_DIR,
-            },
-            "total_documentos": len(documentos),
-        },
-        "documentos": documentos,
-    }
-
-    with open(caminho_arquivo, "w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=False, indent=2)
-
-    return len(documentos)
-
-
-def _extrair_documentos_payload_sync(payload):
-    if isinstance(payload, list):
-        return payload, {"schema_version": 0}
-
-    if not isinstance(payload, dict):
-        raise ValueError("Formato inválido de arquivo de configurações.")
-
-    metadata = payload.get("metadata", {})
-    if metadata is None:
-        metadata = {}
-    if not isinstance(metadata, dict):
-        raise ValueError("Campo 'metadata' inválido no arquivo de configurações.")
-
-    documentos = payload.get("documentos", [])
-    if not isinstance(documentos, list):
-        raise ValueError("O arquivo de configuração não contém lista de documentos.")
-
-    return documentos, metadata
-
+# ─── src/sync.py ────────────────────────────────────────────────────────────
+# _documento_possui_alteracao_manual, _listar_documentos_alterados_para_sync,
+# exportar_configuracoes_json, _extrair_documentos_payload_sync,
+# importar_configuracoes_json,
+# _to_float, _to_optional_float, _to_manual_flag, _normalizar_data_emissao_sync
+# ─────────────────────────────────────────────────────────────────────────────
 
 # _coletar_numero_original_para_match  →  src/utils.py
+
+
+def exportar_configuracoes_ui():
+    try:
+        docs = _listar_documentos_alterados_para_sync()
+        if not docs:
+            messagebox.showwarning("Configurações", "Não há alterações manuais para exportar.")
+            return
+
+        diretorio_inicial = (
+            obter_configuracao("ultimo_sync_diretorio", obter_pasta_saida_relatorios()).strip()
+            or obter_pasta_saida_relatorios()
+        )
+        nome_padrao = f"configuracoes_faturamento_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+        caminho = filedialog.asksaveasfilename(
+            title="Exportar configurações",
+            defaultextension=".json",
+            initialdir=diretorio_inicial,
+            initialfile=nome_padrao,
+            filetypes=[("Arquivo JSON", "*.json"), ("Todos os arquivos", "*.*")],
+        )
+        if not caminho:
+            return
+
+        total = exportar_configuracoes_json(caminho)
+        salvar_configuracao("ultimo_sync_diretorio", os.path.dirname(caminho))
+        messagebox.showinfo(
+            "Configurações",
+            "Configurações exportadas com sucesso.\n\n"
+            f"Documentos exportados: {total}\n"
+            f"Arquivo: {caminho}",
+        )
+    except Exception as exc:
+        messagebox.showerror("Configurações", f"Falha ao exportar configurações.\n\n{exc}")
+
+
+def importar_configuracoes_ui():
+    try:
+        diretorio_inicial = (
+            obter_configuracao("ultimo_sync_diretorio", obter_pasta_saida_relatorios()).strip()
+            or obter_pasta_saida_relatorios()
+        )
+        caminho = filedialog.askopenfilename(
+            title="Importar configurações",
+            initialdir=diretorio_inicial,
+            filetypes=[("Arquivo JSON", "*.json"), ("Todos os arquivos", "*.*")],
+        )
+        if not caminho:
+            return
+
+        salvar_configuracao("ultimo_sync_diretorio", os.path.dirname(caminho))
+        resumo = importar_configuracoes_json(caminho)
+        _atualizar_cache_documentos_pos_alteracao()
+        atualizar_dashboard()
+        _atualizar_status_relatorios_ui("Configurações importadas com sucesso", tipo="ok")
+
+        mensagem = (
+            "Importação concluída com sucesso.\n\n"
+            f"Inseridos: {resumo['inseridos']}\n"
+            f"Atualizados: {resumo['atualizados']}\n"
+            f"Ignorados: {resumo['ignorados']}\n"
+            f"Erros: {len(resumo['erros'])}"
+        )
+        if resumo["erros"]:
+            mensagem += "\n\nPrimeiros erros:\n- " + "\n- ".join(resumo["erros"][:5])
+            if len(resumo["erros"]) > 5:
+                mensagem += f"\n- ... e mais {len(resumo['erros']) - 5} erro(s)."
+
+        messagebox.showinfo("Configurações", mensagem)
+    except Exception as exc:
+        messagebox.showerror("Configurações", f"Falha ao importar configurações.\n\n{exc}")
 
 
 
