@@ -12,7 +12,7 @@ del /f /q git_commit_dashboard.bat 2>nul
 del /f /q git_commit_fase7.bat 2>nul
 
 git add -A
-git commit -m "improve: setup.py src pkg, logging, filial config, tests, remove duplicates"
+git commit -m "improve: src/cache.py, src/logger.py, setup.py src pkgs, filial config, testes, remove duplicatas"
 echo.
 echo === Commit concluido ===
 git log --oneline -8

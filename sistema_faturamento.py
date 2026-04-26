@@ -107,6 +107,10 @@ from src.sync import (
     importar_configuracoes_json,
     _listar_documentos_alterados_para_sync,
 )
+from src.cache import doc_cache
+from src.logger import get_logger as _get_logger
+
+_logger = _get_logger('sistema_faturamento')
 
 # -----------------------------------------------
 #  Constantes de ambiente - lidas de src.config
@@ -830,18 +834,18 @@ def _carregar_documentos_para_memoria():
 def _obter_documentos_em_memoria(force=False):
     global dados_importados
 
-    if not isinstance(dados_importados, dict):
-        dados_importados = {}
-
-    if not force:
-        df_mem = dados_importados.get("df_documentos")
-        if isinstance(df_mem, pd.DataFrame):
-            return df_mem.copy()
+    if not force and doc_cache.valido:
+        return doc_cache.get()
 
     df_mem = _carregar_documentos_para_memoria()
-    dados_importados["df_documentos"] = df_mem
-    dados_importados["memoria_atualizada_em"] = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
-    return df_mem.copy()
+    doc_cache.set(df_mem)
+
+    # Mantém compatibilidade com dados_importados legado
+    if not isinstance(dados_importados, dict):
+        dados_importados = {}
+    dados_importados.update(doc_cache.para_dict_legado())
+
+    return doc_cache.get()
 
 
 def _atualizar_cache_documentos_pos_alteracao():
@@ -851,10 +855,10 @@ def _atualizar_cache_documentos_pos_alteracao():
         relatorio_carregado = not df_mem.empty
         if not isinstance(dados_importados, dict):
             dados_importados = {}
-        dados_importados["total_documentos"] = int(len(df_mem))
-        dados_importados["memoria_atualizada_em"] = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
-    except Exception:
-        pass
+        dados_importados["total_documentos"] = doc_cache.total
+        dados_importados["memoria_atualizada_em"] = doc_cache.atualizado_em
+    except Exception as exc:
+        _logger.warning("_atualizar_cache_documentos_pos_alteracao falhou: %s", exc)
 
 
 def aplicar_icone_aplicacao(janela):

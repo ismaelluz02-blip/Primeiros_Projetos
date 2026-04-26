@@ -53,7 +53,7 @@ def _obter_dataframe_relatorio_filtrado(data_inicial, data_final, docs_df_base=N
                 mes_idx = MESES.index(mes_nome) + 1
                 return datetime(ano, mes_idx, 1)
         except Exception:
-            pass
+            logger.debug("competencia_para_data: nao converteu %r", comp_str)
         return None
 
     df["data_competencia"] = df["competencia"].apply(competencia_para_data)

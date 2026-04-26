@@ -55,9 +55,11 @@ packages = [
     # pacote local — módulos extraídos em src/
     "src",
     "src.banco",
+    "src.cache",
     "src.config",
     "src.dashboard",
     "src.importacao",
+    "src.logger",
     "src.relatorios",
     "src.sync",
     "src.utils",
@@ -101,7 +103,7 @@ setup(
             "upgrade_code": UPGRADE_CODE,
             "all_users": False,
             "install_icon": "logo.ico",
-            "initial_target_dir": rf"[LocalAppDataFolder]\Programs\{APP_NAME}",
+            "initial_target_dir": rf"[LocalAppDataFolder]\Programs\{APP_NAME}.exe",
         },
     },
 )
