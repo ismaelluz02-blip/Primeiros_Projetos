@@ -1,2 +1,25 @@
+# ─────────────────────────────────────────────
+#  Sistema de Faturamento Horizonte
+#  Dependências de runtime  (Python 3.12)
+# ─────────────────────────────────────────────
+
+# Interface gráfica
+customtkinter>=5.2.0
+
+# Leitura e geração de PDFs
+PyMuPDF>=1.23.0
+
+# Planilhas Excel
+pandas>=2.0.0
+openpyxl>=3.1.0
+
+# Imagens (logo, ícones)
+Pillow>=10.0.0
+
+# Gráficos no dashboard
+matplotlib>=3.10.0
+
+# ─────────────────────────────────────────────
+#  Ferramenta de build  (não é runtime)
+# ─────────────────────────────────────────────
 cx_Freeze==7.2.7
-matplotlib>=3.10

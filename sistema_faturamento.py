@@ -1,4 +1,4 @@
-﻿import os
+import os
 import glob
 import re
 import atexit
@@ -23,20 +23,34 @@ import pandas as pd
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from PIL import Image, ImageFilter
 
-MESES = [
-    "janeiro",
-    "fevereiro",
-    "marco",
-    "abril",
-    "maio",
-    "junho",
-    "julho",
-    "agosto",
-    "setembro",
-    "outubro",
-    "novembro",
-    "dezembro",
-]
+from src.utils import (
+    MESES,
+    valor_brasileiro,
+    formatar_moeda_brl,
+    formatar_moeda_brl_exata,
+    parse_valor_monetario,
+    normalizar_texto,
+    _numero_para_texto,
+    _extrair_ano_data_emissao,
+    _normalizar_numero_original_nf,
+    _coletar_numero_original_para_match,
+    _numero_documento_exibicao,
+    _chave_documento_compativel,
+    competencia_por_data,
+    periodo_padrao_mes_atual,
+    obter_periodo_padrao_dashboard,
+    obter_periodo_padrao_relatorios,
+    ler_data_filtro,
+    _obter_periodo_por_entries,
+)
+
+import src.config as _cfg
+from src.banco import (
+    obter_conexao_banco,
+    obter_configuracao,
+    salvar_configuracao,
+    iniciar_banco,
+)
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 APP_DIR = os.path.dirname(sys.executable) if getattr(sys, "frozen", False) else SCRIPT_DIR
@@ -245,234 +259,12 @@ def alertar_instancia_em_execucao(pid_existente=None):
 
 
 # ------------------------
-# BANCO
+# BANCO  →  src/banco.py
 # ------------------------
 
 
-def _sqlite_db_valido(caminho_db):
-    if not caminho_db or not os.path.exists(caminho_db):
-        return True
-    try:
-        conn = sqlite3.connect(caminho_db)
-        cursor = conn.cursor()
-        cursor.execute("PRAGMA quick_check")
-        row = cursor.fetchone()
-        conn.close()
-        return bool(row) and str(row[0]).strip().lower() == "ok"
-    except sqlite3.Error:
-        return False
-
-
-def _candidatos_recuperacao_banco():
-    caminhos = []
-    vistos = set()
-    for caminho in (
-        os.path.join(DEFAULT_APP_DATA_DIR, "faturamento.db"),
-        os.path.join(FALLBACK_APP_DATA_DIR, "faturamento.db"),
-        LEGACY_DB_PATH,
-        os.path.join(BASE_DIR, "faturamento.db"),
-    ):
-        caminho_abs = os.path.abspath(caminho)
-        if caminho_abs in vistos or caminho_abs == os.path.abspath(DB_PATH):
-            continue
-        vistos.add(caminho_abs)
-        caminhos.append(caminho_abs)
-    return caminhos
-
-
-def _tentar_recuperar_banco():
-    journal_path = f"{DB_PATH}-journal"
-    try:
-        if os.path.exists(journal_path):
-            os.remove(journal_path)
-    except OSError:
-        pass
-
-    if _sqlite_db_valido(DB_PATH):
-        return True
-
-    for candidato in _candidatos_recuperacao_banco():
-        if not os.path.exists(candidato):
-            continue
-        if not _sqlite_db_valido(candidato):
-            continue
-        try:
-            os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
-            if os.path.exists(DB_PATH):
-                backup_path = f"{DB_PATH}.corrompido.bak"
-                try:
-                    if os.path.exists(backup_path):
-                        os.remove(backup_path)
-                except OSError:
-                    pass
-                try:
-                    os.replace(DB_PATH, backup_path)
-                except OSError:
-                    pass
-            shutil.copy2(candidato, DB_PATH)
-            try:
-                if os.path.exists(journal_path):
-                    os.remove(journal_path)
-            except OSError:
-                pass
-            if _sqlite_db_valido(DB_PATH):
-                return True
-        except OSError:
-            continue
-
-    if os.path.exists(DB_PATH):
-        backup_path = f"{DB_PATH}.corrompido.bak"
-        try:
-            if os.path.exists(backup_path):
-                os.remove(backup_path)
-        except OSError:
-            pass
-        try:
-            os.replace(DB_PATH, backup_path)
-        except OSError:
-            pass
-    try:
-        if os.path.exists(journal_path):
-            os.remove(journal_path)
-    except OSError:
-        pass
-    return True
-
-
-def obter_conexao_banco():
-    conn = sqlite3.connect(DB_PATH)
-    try:
-        cursor = conn.cursor()
-        cursor.execute("PRAGMA journal_mode=MEMORY")
-        cursor.execute("PRAGMA temp_store=MEMORY")
-    except sqlite3.Error:
-        pass
-    return conn
-
-
-def obter_configuracao(chave, padrao=""):
-    conn = obter_conexao_banco()
-    conn.row_factory = sqlite3.Row
-    cursor = conn.cursor()
-    cursor.execute("SELECT valor FROM configuracoes WHERE chave=?", (chave,))
-    row = cursor.fetchone()
-    conn.close()
-    if row and row[0] is not None:
-        return str(row[0])
-    return padrao
-
-
-def salvar_configuracao(chave, valor):
-    conn = obter_conexao_banco()
-    cursor = conn.cursor()
-    cursor.execute(
-        """
-        INSERT INTO configuracoes (chave, valor)
-        VALUES (?, ?)
-        ON CONFLICT(chave) DO UPDATE SET valor=excluded.valor
-        """,
-        (chave, "" if valor is None else str(valor)),
-    )
-    conn.commit()
-    conn.close()
-
-
-def iniciar_banco():
-    ultima_exc = None
-    for tentativa in range(2):
-        conn = None
-        try:
-            conn = obter_conexao_banco()
-            cursor = conn.cursor()
-
-            cursor.execute(
-                """
-                CREATE TABLE IF NOT EXISTS documentos (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    numero INTEGER,
-                    numero_original TEXT,
-                    tipo TEXT,
-                    data_emissao TEXT,
-                    valor_inicial REAL,
-                    valor_final REAL,
-                    frete TEXT,
-                    status TEXT,
-                    competencia TEXT
-                )
-                """
-            )
-
-            cursor.execute(
-                """
-                CREATE UNIQUE INDEX IF NOT EXISTS idx_documentos_numero_tipo
-                ON documentos (numero, tipo)
-                """
-            )
-            cursor.execute(
-                """
-                CREATE TABLE IF NOT EXISTS configuracoes (
-                    chave TEXT PRIMARY KEY,
-                    valor TEXT
-                )
-                """
-            )
-
-            colunas_existentes = {linha[1] for linha in cursor.execute("PRAGMA table_info(documentos)").fetchall()}
-            if "valor_inicial_original" not in colunas_existentes:
-                cursor.execute("ALTER TABLE documentos ADD COLUMN valor_inicial_original REAL")
-            if "valor_final_original" not in colunas_existentes:
-                cursor.execute("ALTER TABLE documentos ADD COLUMN valor_final_original REAL")
-            if "status_original" not in colunas_existentes:
-                cursor.execute("ALTER TABLE documentos ADD COLUMN status_original TEXT")
-            if "cancelado_manual" not in colunas_existentes:
-                cursor.execute("ALTER TABLE documentos ADD COLUMN cancelado_manual INTEGER DEFAULT 0")
-            if "competencia_manual" not in colunas_existentes:
-                cursor.execute("ALTER TABLE documentos ADD COLUMN competencia_manual INTEGER DEFAULT 0")
-            if "frete_manual" not in colunas_existentes:
-                cursor.execute("ALTER TABLE documentos ADD COLUMN frete_manual INTEGER DEFAULT 0")
-            if "frete_revisado_manual" not in colunas_existentes:
-                cursor.execute("ALTER TABLE documentos ADD COLUMN frete_revisado_manual INTEGER DEFAULT 0")
-
-            cursor.execute(
-                """
-                SELECT id, numero, numero_original, data_emissao
-                FROM documentos
-                WHERE UPPER(COALESCE(tipo, ''))='NF'
-                """
-            )
-            ajustes_numero_original = []
-            for doc_id, numero_doc, numero_original_doc, data_emissao_doc in cursor.fetchall():
-                numero_corrigido = _normalizar_numero_original_nf(
-                    numero_doc,
-                    numero_original_doc,
-                    data_emissao_doc,
-                )
-                numero_atual = str(numero_original_doc or "").strip()
-                if numero_corrigido and numero_corrigido != numero_atual:
-                    ajustes_numero_original.append((numero_corrigido, int(doc_id)))
-
-            if ajustes_numero_original:
-                cursor.executemany(
-                    "UPDATE documentos SET numero_original=? WHERE id=?",
-                    ajustes_numero_original,
-                )
-
-            conn.commit()
-            conn.close()
-            return
-        except sqlite3.Error as exc:
-            ultima_exc = exc
-            try:
-                if conn is not None:
-                    conn.close()
-            except Exception:
-                pass
-            if tentativa == 0 and _tentar_recuperar_banco():
-                continue
-            raise
-
-    if ultima_exc:
-        raise ultima_exc
+# _sqlite_db_valido / _tentar_recuperar_banco / obter_conexao_banco
+# obter_configuracao / salvar_configuracao / iniciar_banco  →  src/banco.py
 
 
 # ------------------------
@@ -507,184 +299,8 @@ WATERMARK_POS = {
 
 
 # ------------------------
-# UTIL
+# UTIL  →  src/utils.py
 # ------------------------
-
-def valor_brasileiro(v):
-    v = v.replace(".", "").replace(",", ".")
-    return float(v)
-
-
-def formatar_moeda_brl(valor):
-    try:
-        return f"R$ {valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-    except:
-        return "R$ 0,00"
-
-
-def formatar_moeda_brl_exata(valor):
-    try:
-        v = float(valor)
-    except:
-        return "R$ 0,00"
-    if abs(v - round(v)) < 0.005:
-        return f"R$ {int(round(v)):,.0f}".replace(",", "X").replace(".", ",").replace("X", ".")
-    return f"R$ {v:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-
-
-def parse_valor_monetario(valor_str):
-    bruto = re.sub(r"[^\d,.\s]", "", str(valor_str)).replace(" ", "")
-    if not bruto:
-        return None
-
-    if "," in bruto:
-        try:
-            return float(bruto.replace(".", "").replace(",", "."))
-        except ValueError:
-            return None
-
-    if bruto.count(".") == 1:
-        try:
-            return float(bruto)
-        except ValueError:
-            return None
-
-    if bruto.count(".") > 1:
-        return None
-
-    try:
-        return float(bruto.replace(".", ""))
-    except ValueError:
-        return None
-
-
-def normalizar_texto(texto):
-    sem_acentos = unicodedata.normalize("NFKD", texto).encode("ASCII", "ignore").decode("ASCII")
-    return sem_acentos.upper()
-
-
-def _numero_para_texto(numero):
-    if numero in (None, ""):
-        return ""
-
-    if isinstance(numero, float):
-        return str(int(numero)) if numero.is_integer() else str(numero)
-
-    numero_txt = str(numero).strip()
-    if not numero_txt:
-        return ""
-
-    if re.fullmatch(r"-?\d+\.0+", numero_txt):
-        try:
-            return str(int(float(numero_txt)))
-        except ValueError:
-            return numero_txt
-
-    return numero_txt
-
-
-def _extrair_ano_data_emissao(data_emissao):
-    if isinstance(data_emissao, datetime):
-        return int(data_emissao.year)
-
-    data_txt = str(data_emissao or "").strip()
-    if not data_txt:
-        return None
-
-    for formato in ("%d/%m/%Y", "%Y-%m-%d", "%Y-%m-%d %H:%M:%S"):
-        try:
-            return datetime.strptime(data_txt, formato).year
-        except ValueError:
-            continue
-    return None
-
-
-def _normalizar_numero_original_nf(numero, numero_original="", data_emissao=""):
-    numero_txt = re.sub(r"\D", "", _numero_para_texto(numero))
-    numero_original_txt = re.sub(r"\D", "", str(numero_original or "").strip())
-
-    numero_legado_txt = ""
-    ano_data = _extrair_ano_data_emissao(data_emissao)
-    if numero_txt:
-        if ano_data and numero_txt.startswith(str(ano_data)) and 0 < len(numero_txt[4:]) <= 4:
-            numero_legado_txt = numero_txt[4:]
-        elif len(numero_txt) == 8 and numero_txt.startswith("20"):
-            numero_legado_txt = numero_txt[4:]
-
-    numero_legado_txt = str(int(numero_legado_txt)) if numero_legado_txt else ""
-
-    if numero_original_txt:
-        if numero_legado_txt and numero_original_txt == numero_txt:
-            return numero_legado_txt
-        return str(int(numero_original_txt)) if numero_original_txt.isdigit() else numero_original_txt
-
-    if numero_legado_txt:
-        return numero_legado_txt
-
-    if numero_txt:
-        return str(int(numero_txt)) if numero_txt.isdigit() else numero_txt
-
-    return ""
-
-
-def _numero_documento_exibicao(tipo, numero, numero_original="", data_emissao=""):
-    tipo_norm = str(tipo or "").upper().strip()
-    if tipo_norm == "NF":
-        return _normalizar_numero_original_nf(numero, numero_original, data_emissao)
-    return _numero_para_texto(numero)
-
-
-def _chave_documento_compativel(tipo, numero, numero_original=""):
-    tipo_norm = str(tipo or "").upper().strip() or "DOC"
-    if tipo_norm == "NF":
-        numero_match_txt, numero_match_int = _coletar_numero_original_para_match(numero_original, numero)
-        numero_txt = str(numero_match_int) if numero_match_int is not None else numero_match_txt
-    else:
-        numero_txt = _numero_para_texto(numero)
-    return f"{tipo_norm}:{numero_txt or 'SEMNUM'}"
-
-
-def competencia_por_data(data):
-    return f"{MESES[data.month - 1]}/{data.year}"
-
-
-def periodo_padrao_mes_atual():
-    hoje = datetime.now()
-    primeiro_dia = datetime(hoje.year, hoje.month, 1)
-    ultimo_dia = datetime(hoje.year, hoje.month, monthrange(hoje.year, hoje.month)[1])
-    return primeiro_dia, ultimo_dia
-
-
-def obter_periodo_padrao_dashboard():
-    hoje = datetime.now()
-    return datetime(hoje.year, 1, 1), hoje
-
-
-def obter_periodo_padrao_relatorios():
-    hoje = datetime.now()
-    return datetime(hoje.year, hoje.month, 1), hoje
-
-
-def ler_data_filtro(texto_data, nome_campo):
-    try:
-        return datetime.strptime(texto_data.strip(), "%d/%m/%Y")
-    except ValueError as exc:
-        raise ValueError(f"{nome_campo} invalida. Use o formato DD/MM/AAAA.") from exc
-
-
-def _obter_periodo_por_entries(entry_inicio, entry_fim, contexto="Período", silencioso=False):
-    if entry_inicio is None or entry_fim is None:
-        return None, None
-
-    try:
-        data_inicial = ler_data_filtro(entry_inicio.get(), "Data inicial")
-        data_final = ler_data_filtro(entry_fim.get(), "Data final")
-    except ValueError as exc:
-        if silencioso:
-            return None, None
-        raise ValueError(f"{contexto}: {exc}") from exc
-
-    return data_inicial, data_final
 
 
 def obter_periodo_dashboard(silencioso=False):
@@ -2229,13 +1845,7 @@ def _extrair_documentos_payload_sync(payload):
     return documentos, metadata
 
 
-def _coletar_numero_original_para_match(numero_original, numero, data_emissao=""):
-    numero_original_txt = _normalizar_numero_original_nf(numero, numero_original, data_emissao)
-    try:
-        numero_original_int = int(re.sub(r"\D", "", numero_original_txt))
-    except ValueError:
-        numero_original_int = None
-    return numero_original_txt, numero_original_int
+# _coletar_numero_original_para_match  →  src/utils.py
 
 
 def _buscar_documento_existente_sync(cursor, tipo, numero, numero_original):
@@ -7563,7 +7173,8 @@ aplicar_tema_interface()
 # Ajusta a janela ao novo layout dashboard.
 app.update_idletasks()
 largura_ideal = min(max(900, app.winfo_reqwidth()), largura_tela - 10)
-altura_ideal = min(max(680, app.winfo_reqheight()), altura_tela - 10)
+altura_ideal = min(max(680, app.winfo_reqheight()), altura_tela
+ - 10)
 centralizar_janela(app, largura_ideal, altura_ideal)
 
 app.after(120, atualizar_dashboard)
@@ -7572,5 +7183,3 @@ try:
     app.mainloop()
 finally:
     liberar_lock_instancia()
-
-
