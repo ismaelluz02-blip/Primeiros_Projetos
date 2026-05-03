@@ -1,6 +1,8 @@
 import os
 import tempfile
 import hashlib
+import re
+import unicodedata
 
 STATUS_ICON = {'ok': '✅', 'error': '❌', 'warning': '⚠️', 'info': 'ℹ️'}
 STATUS_COLOR = {'ok': '#27ae60', 'error': '#e74c3c', 'warning': '#f39c12', 'info': '#3498db'}
@@ -12,7 +14,53 @@ def _iid(folder, text):
     return hashlib.md5(f"{folder}|{text}".encode('utf-8')).hexdigest()[:10]
 
 
-def _render_item(item, folder, justifiable=False):
+def _norm(text):
+    text = unicodedata.normalize('NFKD', str(text or ''))
+    text = ''.join(ch for ch in text if not unicodedata.combining(ch))
+    text = re.sub(r'[^a-z0-9]+', ' ', text.lower())
+    return ' '.join(text.split())
+
+
+def _doc_code(text):
+    n = _norm(text)
+    for code, terms in [
+        ('AVISO_PREVIO', ['aviso previo', 'pedido de demissao']),
+        ('SEGURO_DESEMPREGO', ['seguro desemprego']),
+        ('RECIBO_FERIAS', ['recibo de ferias']),
+        ('AVISO_FERIAS', ['aviso de ferias']),
+        ('COMPROVANTE_RESCISAO', ['comprovante de pagamento da rescisao']),
+        ('COMPROVANTE_FERIAS', ['comprovante de pagamento de ferias', 'comprovante de pagamento']),
+        ('TRCT', ['termo de rescisao', 'trct']),
+        ('FGTS_GRRF', ['fgts grrf', 'grrf', 'multa 40']),
+        ('ASO', ['aso demissional', 'aso admissional', 'aso']),
+        ('ESOCIAL', ['esocial', 'baixa digital']),
+        ('VT_DECLARACAO', ['declaracao de opcao vt', 'vale transporte']),
+        ('EPI', ['ficha de epi', 'entrega de epi']),
+        ('CTPS_ESOCIAL', ['ctps', 'ctps digital']),
+        ('CONTRATO', ['contrato de trabalho']),
+        ('FICHA_REGISTRO', ['ficha de registro']),
+    ]:
+        if any(term in n for term in terms):
+            return code
+    return n[:80] or 'pendencia'
+
+
+def _issue_storage_id(folder, section='', person='', text=''):
+    return _iid(folder, f"{_norm(section)}|{_norm(person)}|{_doc_code(text)}")
+
+
+def _parse_issue(msg):
+    section = ''
+    person = ''
+    text = msg or ''
+    if ' — ' in text:
+        section, text = text.split(' — ', 1)
+    if ': ' in text:
+        person, text = text.split(': ', 1)
+    return section, person, text
+
+
+def _render_item(item, folder, justifiable=False, context=None):
     st = item.get('status', 'info')
     icon = STATUS_ICON.get(st, '•')
     color = STATUS_COLOR.get(st, '#555')
@@ -21,9 +69,11 @@ def _render_item(item, folder, justifiable=False):
     note_html = f' <small style="color:#888">— {note}</small>' if note else ''
 
     if justifiable and st in ('error', 'warning'):
-        iid = _iid(folder, label + note)
+        context = context or {}
+        storage_id = _issue_storage_id(folder, context.get('section', ''), context.get('person', ''), f'{label} {note}')
+        iid = _iid(folder, f'{storage_id}|detail|{label}|{note}')
         return f'''
-<div id="row_{iid}" data-justifiable="{iid}" style="display:flex;align-items:flex-start;gap:8px;margin:5px 0">
+<div id="row_{iid}" data-rowid="{iid}" data-justifiable="{storage_id}" style="display:flex;align-items:flex-start;gap:8px;margin:5px 0">
   <div style="flex:1">
     <span style="color:{color}">{icon} {label}{note_html}</span>
     <span id="badge_{iid}" style="display:none;margin-left:6px"></span>
@@ -52,24 +102,29 @@ def _render_item(item, folder, justifiable=False):
         return f'<li style="color:{color};margin:4px 0">{icon} {label}{note_html}</li>\n'
 
 
-def _render_items(items, folder='', justifiable=False):
+def _render_items(items, folder='', justifiable=False, context=None):
     if not items:
         return ''
     has_just = justifiable and any(i.get('status') in ('error', 'warning') for i in items)
     if has_just:
-        rows = ''.join(_render_item(i, folder, justifiable=True) for i in items)
+        rows = ''.join(_render_item(i, folder, justifiable=True, context=context) for i in items)
         return f'<div style="padding-left:8px;margin:6px 0">{rows}</div>'
-    rows = ''.join(_render_item(i, folder) for i in items)
+    rows = ''.join(_render_item(i, folder, context=context) for i in items)
     return f'<ul style="list-style:none;padding-left:8px;margin:6px 0">{rows}</ul>'
 
 
-def _render_employee(emp, folder):
+def _render_employee(emp, folder, section_name=''):
     st = emp.get('status', 'ok')
     icon = STATUS_ICON.get(st, '•')
     color = STATUS_COLOR.get(st, '#333')
     bg = STATUS_BG.get(st, '#fff')
     name = emp.get('name', '')
-    items_html = _render_items(emp.get('items', []), folder=folder, justifiable=True)
+    items_html = _render_items(
+        emp.get('items', []),
+        folder=folder,
+        justifiable=True,
+        context={'section': section_name, 'person': name},
+    )
     return f'''
     <div class="emp-block" style="border-left:4px solid {color};background:{bg};padding:8px 12px;margin:8px 0;border-radius:4px">
       <strong style="color:{color}">{icon} {name}</strong>
@@ -85,8 +140,13 @@ def _render_section(sec, folder):
     bg = STATUS_BG.get(st, '#fff')
     status_icon = STATUS_ICON.get(st, '•')
 
-    items_html = _render_items(sec.get('items', []), folder=folder, justifiable=True)
-    employees_html = ''.join(_render_employee(e, folder) for e in sec.get('employees', []))
+    items_html = _render_items(
+        sec.get('items', []),
+        folder=folder,
+        justifiable=True,
+        context={'section': name},
+    )
+    employees_html = ''.join(_render_employee(e, folder, section_name=name) for e in sec.get('employees', []))
 
     return f'''
   <div class="section" style="border:1px solid #ddd;border-radius:8px;margin:16px 0;overflow:hidden">
@@ -113,9 +173,11 @@ def _render_issues_section(all_issues, folder):
     items_html = ''
     for issue in all_issues:
         msg = issue.get('msg', '')
-        iid = _iid(folder, msg)
+        section, person, text = _parse_issue(msg)
+        storage_id = _issue_storage_id(folder, section, person, text)
+        iid = _iid(folder, f'{storage_id}|summary|{msg}')
         items_html += f'''
-<div id="row_{iid}" data-justifiable="{iid}" style="display:flex;align-items:flex-start;gap:8px;padding:6px 0;border-bottom:1px solid #fad7d7">
+<div id="row_{iid}" data-rowid="{iid}" data-justifiable="{storage_id}" style="display:flex;align-items:flex-start;gap:8px;padding:6px 0;border-bottom:1px solid #fad7d7">
   <div style="flex:1">
     <span style="color:#c0392b">❌ {msg}</span>
     <span id="badge_{iid}" style="display:none;margin-left:6px"></span>
@@ -235,46 +297,66 @@ function togglePanel(id) {{
 }}
 
 function saveJust(id) {{
+  var row = document.getElementById('row_' + id);
+  var key = row ? row.dataset.justifiable : id;
   var note = (document.getElementById('note_' + id).value || '').trim();
   var treated = document.getElementById('chk_' + id).checked;
   var now = new Date().toLocaleDateString('pt-BR');
-  _save(id, {{note: note, treated: treated, date: now}});
-  _applyJust(id, note, treated, now);
+  _save(key, {{note: note, treated: treated, date: now}});
+  _applyJust(key, note, treated, now);
   _updateCounters();
 }}
 
-function _applyJust(id, note, treated, date) {{
-  var row = document.getElementById('row_' + id);
-  var badge = document.getElementById('badge_' + id);
-  var display = document.getElementById('display_' + id);
-  var dateEl = document.getElementById('date_' + id);
-  if (!row) return;
+function _applyJust(key, note, treated, date) {{
+  document.querySelectorAll('[data-justifiable="' + key + '"]').forEach(function(row) {{
+    var id = row.dataset.rowid;
+    var badge = document.getElementById('badge_' + id);
+    var display = document.getElementById('display_' + id);
+    var dateEl = document.getElementById('date_' + id);
+    var noteEl = document.getElementById('note_' + id);
+    var chkEl = document.getElementById('chk_' + id);
 
-  if (treated) {{
-    row.style.opacity = '0.55';
-    badge.innerHTML = '<span style="background:#27ae60;color:white;padding:2px 9px;border-radius:10px;font-size:0.82em">✓ TRATADO</span>';
-    badge.style.display = 'inline';
-  }} else if (note) {{
-    row.style.opacity = '1';
-    badge.innerHTML = '<span style="background:#3498db;color:white;padding:2px 9px;border-radius:10px;font-size:0.82em">📝 JUSTIFICADO</span>';
-    badge.style.display = 'inline';
-  }} else {{
-    row.style.opacity = '1';
-    badge.style.display = 'none';
-  }}
+    if (noteEl) noteEl.value = note || '';
+    if (chkEl) chkEl.checked = !!treated;
 
-  if (display) {{
-    if (note) {{ display.textContent = '💬 ' + note; display.style.display = 'block'; }}
-    else {{ display.style.display = 'none'; }}
-  }}
-  if (dateEl && date) dateEl.textContent = date;
+    if (treated) {{
+      row.style.display = 'none';
+      row.dataset.treated = '1';
+      if (badge) {{
+        badge.innerHTML = '<span style="background:#27ae60;color:white;padding:2px 9px;border-radius:10px;font-size:0.82em">✓ TRATADO</span>';
+        badge.style.display = 'inline';
+      }}
+    }} else if (note) {{
+      row.style.display = '';
+      row.dataset.treated = '0';
+      if (badge) {{
+        badge.innerHTML = '<span style="background:#3498db;color:white;padding:2px 9px;border-radius:10px;font-size:0.82em">📝 JUSTIFICADO</span>';
+        badge.style.display = 'inline';
+      }}
+    }} else {{
+      row.style.display = '';
+      row.dataset.treated = '0';
+      if (badge) badge.style.display = 'none';
+    }}
+
+    if (display) {{
+      if (note) {{ display.textContent = '💬 ' + note; display.style.display = treated ? 'none' : 'block'; }}
+      else {{ display.style.display = 'none'; }}
+    }}
+    if (dateEl && date) dateEl.textContent = date;
+  }});
 }}
 
 function _updateCounters() {{
   var rows = document.querySelectorAll('[data-justifiable]');
-  var treated = 0, justified = 0, total = rows.length;
+  var states = {{}};
   rows.forEach(function(r) {{
-    var d = _load(r.dataset.justifiable);
+    states[r.dataset.justifiable] = _load(r.dataset.justifiable) || {{}};
+  }});
+  var keys = Object.keys(states);
+  var total = keys.length, treated = 0, justified = 0;
+  keys.forEach(function(k) {{
+    var d = states[k];
     if (d && d.treated) treated++;
     else if (d && d.note) justified++;
   }});
@@ -306,10 +388,6 @@ document.addEventListener('DOMContentLoaded', function() {{
     var id = row.dataset.justifiable;
     var d = _load(id);
     if (d) {{
-      var noteEl = document.getElementById('note_' + id);
-      var chkEl = document.getElementById('chk_' + id);
-      if (noteEl) noteEl.value = d.note || '';
-      if (chkEl) chkEl.checked = !!d.treated;
       _applyJust(id, d.note || '', !!d.treated, d.date || '');
     }}
   }});

@@ -1,5 +1,6 @@
 import os
 from .utils import normalize
+from .pdf_audit import analyze_pdf_file, evidence_note, pdf_content_enabled, tags_from_pdf_analysis
 
 
 def read_pdf_text(filepath):
@@ -170,6 +171,51 @@ def identify_doc_types(filepath):
     return tags
 
 
+def get_pdf_evidence_in_folder(folder_path, recurse=False):
+    evidence = {}
+    if not pdf_content_enabled():
+        return evidence
+    if not os.path.isdir(folder_path):
+        return evidence
+    for item in os.listdir(folder_path):
+        item_path = os.path.join(folder_path, item)
+        if os.path.isfile(item_path) and item.lower().endswith('.pdf'):
+            analysis = analyze_pdf_file(item_path)
+            _, pdf_evidence = tags_from_pdf_analysis(analysis)
+            for tag, items in pdf_evidence.items():
+                evidence.setdefault(tag, []).extend(items)
+        elif recurse and os.path.isdir(item_path):
+            child = get_pdf_evidence_in_folder(item_path, recurse=True)
+            for tag, items in child.items():
+                evidence.setdefault(tag, []).extend(items)
+    return evidence
+
+
+def get_evidence_note(evidence_map, tag):
+    items = evidence_map.get(tag) or []
+    if not items:
+        return ''
+    best = sorted(
+        items,
+        key=lambda e: {'alta': 3, 'media': 2, 'baixa': 1}.get(e.get('confidence'), 0),
+        reverse=True,
+    )[0]
+    return evidence_note(best)
+
+
+def get_tags_for_files(file_paths):
+    all_tags = set()
+    for item_path in file_paths:
+        if not os.path.isfile(item_path):
+            continue
+        all_tags |= identify_doc_types(item_path)
+        if pdf_content_enabled() and item_path.lower().endswith('.pdf'):
+            analysis = analyze_pdf_file(item_path)
+            pdf_tags, _ = tags_from_pdf_analysis(analysis)
+            all_tags |= pdf_tags
+    return all_tags
+
+
 def get_all_tags_in_folder(folder_path, recurse=False):
     all_tags = set()
     if not os.path.isdir(folder_path):
@@ -178,6 +224,10 @@ def get_all_tags_in_folder(folder_path, recurse=False):
         item_path = os.path.join(folder_path, item)
         if os.path.isfile(item_path):
             all_tags |= identify_doc_types(item_path)
+            if pdf_content_enabled() and item.lower().endswith('.pdf'):
+                analysis = analyze_pdf_file(item_path)
+                pdf_tags, _ = tags_from_pdf_analysis(analysis)
+                all_tags |= pdf_tags
         elif recurse and os.path.isdir(item_path):
             all_tags |= get_all_tags_in_folder(item_path, recurse=True)
     return all_tags

@@ -4,7 +4,14 @@ from datetime import date
 from .utils import (normalize, load_config, find_folder, find_files_by_keywords,
                    list_subfolders, has_any_file, employee_matches_folder)
 from .excel_reader import read_forca_trabalho, get_month_employees
-from .pdf_reader import identify_doc_types, get_all_tags_in_folder
+from .pdf_reader import (
+    identify_doc_types,
+    get_all_tags_in_folder,
+    get_evidence_note,
+    get_pdf_evidence_in_folder,
+    get_tags_for_files,
+)
+from .pdf_audit import configure_pdf_audit, get_pdf_audit_diagnostics
 
 FOLDER_PATTERNS = {
     'acordo_coletivo': ['acordo coletivo'],
@@ -34,6 +41,18 @@ def _item(label, status, note=''):
 
 def _issue(msg, section=''):
     return {'msg': msg, 'section': section}
+
+
+def _evidence(evidence_map, *tags):
+    for tag in tags:
+        note = get_evidence_note(evidence_map, tag)
+        if note:
+            return note
+    return ''
+
+
+def _join_scope(scope, msg):
+    return f'{scope}: {msg}' if scope else msg
 
 
 def detect_competencia(folder_path):
@@ -96,6 +115,7 @@ def audit_declaracoes(folder_path, has_admissao, has_demissao, has_ferias, has_t
         return section
 
     all_tags = get_all_tags_in_folder(decl_folder)
+    evidence = get_pdf_evidence_in_folder(decl_folder)
     files_in_folder = [f for f in os.listdir(decl_folder) if os.path.isfile(os.path.join(decl_folder, f))]
 
     required = [
@@ -112,7 +132,7 @@ def audit_declaracoes(folder_path, has_admissao, has_demissao, has_ferias, has_t
     issues = []
     for tag, label, is_required in required:
         if tag in all_tags:
-            section['items'].append(_item(label, 'ok'))
+            section['items'].append(_item(label, 'ok', _evidence(evidence, tag)))
         elif is_required:
             section['items'].append(_item(label, 'error', 'FALTANDO'))
             issues.append(_issue(f'Declaração faltando: {label}', 'Declarações'))
@@ -129,6 +149,7 @@ def audit_declaracoes(folder_path, has_admissao, has_demissao, has_ferias, has_t
 def audit_admissao_person(person_folder, person_name, config):
     result = {'name': person_name, 'items': [], 'issues': []}
     tags = get_all_tags_in_folder(person_folder, recurse=True)
+    evidence = get_pdf_evidence_in_folder(person_folder, recurse=True)
     files = [f for f in os.listdir(person_folder) if os.path.isfile(os.path.join(person_folder, f))]
 
     ponto_exempt = [normalize(e) for e in config.get('ponto_exempt', [])]
@@ -142,7 +163,7 @@ def audit_admissao_person(person_folder, person_name, config):
     ]
     for tag, label, required in checks:
         if tag in tags:
-            result['items'].append(_item(label, 'ok'))
+            result['items'].append(_item(label, 'ok', _evidence(evidence, tag)))
         elif required:
             result['items'].append(_item(label, 'error', 'FALTANDO'))
             result['issues'].append(f'{label} não encontrado')
@@ -152,7 +173,9 @@ def audit_admissao_person(person_folder, person_name, config):
     has_esocial = 'ESOCIAL' in tags
     if has_ctps or has_esocial:
         label = 'CTPS Digital / eSocial'
-        note = '(eSocial aceito)' if has_esocial and not has_ctps and esocial_ok else ''
+        note = _evidence(evidence, 'CTPS', 'ESOCIAL')
+        if not note and has_esocial and not has_ctps and esocial_ok:
+            note = '(eSocial aceito)'
         result['items'].append(_item(label, 'ok', note))
     else:
         result['items'].append(_item('CTPS Digital / eSocial', 'error', 'FALTANDO'))
@@ -161,7 +184,7 @@ def audit_admissao_person(person_folder, person_name, config):
     # ASO
     has_aso = any(t in tags for t in ['ASO_ADMISSIONAL', 'ASO'])
     if has_aso:
-        result['items'].append(_item('ASO admissional', 'ok'))
+        result['items'].append(_item('ASO admissional', 'ok', _evidence(evidence, 'ASO_ADMISSIONAL', 'ASO')))
     else:
         result['items'].append(_item('ASO admissional', 'error', 'FALTANDO'))
         result['issues'].append('ASO admissional não encontrado')
@@ -174,7 +197,7 @@ def audit_admissao_person(person_folder, person_name, config):
     is_epi_exempt = any(_name_overlaps(e, person_norm) for e in epi_exempt_names)
     has_epi = 'EPI' in tags
     if has_epi:
-        result['items'].append(_item('Ficha de entrega de EPI', 'ok'))
+        result['items'].append(_item('Ficha de entrega de EPI', 'ok', _evidence(evidence, 'EPI')))
     elif is_epi_exempt:
         result['items'].append(_item('Ficha de entrega de EPI', 'info', 'Isento por regra operacional'))
     else:
@@ -184,7 +207,7 @@ def audit_admissao_person(person_folder, person_name, config):
     # VT declaration
     has_vt_decl = 'VT_DECLARACAO' in tags
     if has_vt_decl:
-        result['items'].append(_item('Declaração de opção VT', 'ok'))
+        result['items'].append(_item('Declaração de opção VT', 'ok', _evidence(evidence, 'VT_DECLARACAO')))
     else:
         result['items'].append(_item('Declaração de opção VT', 'warning', 'Não encontrado'))
         result['issues'].append('Declaração de opção VT não encontrada')
@@ -233,10 +256,11 @@ def audit_admissoes(folder_path, admitted_employees, config):
     for sf in troca_funcao_folders:
         person_name = os.path.basename(sf)
         tags = get_all_tags_in_folder(sf, recurse=True)
+        evidence = get_pdf_evidence_in_folder(sf, recurse=True)
         result = {'name': person_name + ' (Mudança de função)', 'items': [], 'issues': []}
         has_aso = any(t in tags for t in ['ASO_MUDANCA', 'ASO'])
         if has_aso:
-            result['items'].append(_item('ASO mudança de risco', 'ok'))
+            result['items'].append(_item('ASO mudança de risco', 'ok', _evidence(evidence, 'ASO_MUDANCA', 'ASO')))
         else:
             result['items'].append(_item('ASO mudança de risco', 'warning', 'Não encontrado'))
             result['issues'].append('ASO de mudança de risco não encontrado')
@@ -258,6 +282,7 @@ def audit_admissoes(folder_path, admitted_employees, config):
 def audit_demissao_person(person_folder, person_name, config, employees):
     result = {'name': person_name, 'items': [], 'issues': []}
     tags = get_all_tags_in_folder(person_folder, recurse=True)
+    evidence = get_pdf_evidence_in_folder(person_folder, recurse=True)
 
     # Check if ASO demissional can be exempt (admission < 3 months ago)
     aso_exempt = False
@@ -322,7 +347,7 @@ def audit_demissao_person(person_folder, person_name, config, employees):
     # ASO demissional
     has_aso_dem = any(t in tags for t in ['ASO_DEMISSIONAL', 'ASO'])
     if has_aso_dem:
-        result['items'].append(_item('ASO demissional', 'ok'))
+        result['items'].append(_item('ASO demissional', 'ok', _evidence(evidence, 'ASO_DEMISSIONAL', 'ASO')))
     elif aso_exempt:
         result['items'].append(_item('ASO demissional', 'info', f'Dispensado — ASO admissional < {exempt_months} meses'))
     else:
@@ -366,8 +391,53 @@ def audit_demissoes(folder_path, dismissed_employees, config, all_employees):
     return section
 
 
-def audit_ferias(folder_path):
-    section = {'name': 'Férias', 'icon': '🏖️', 'items': [], 'issues': []}
+def _audit_ferias_scope(scope_path, scope_name, recurse=True, file_paths=None):
+    result = {'name': scope_name, 'items': [], 'issues': []}
+    tags = get_tags_for_files(file_paths) if file_paths is not None else get_all_tags_in_folder(scope_path, recurse=recurse)
+
+    checks = [
+        ('AVISO_FERIAS', 'Aviso de férias', 'error', 'Aviso de férias não encontrado'),
+        ('RECIBO_FERIAS', 'Recibo de férias', 'error', 'Recibo de férias não encontrado'),
+        ('COMPROVANTE_FERIAS', 'Comprovante de pagamento', 'warning',
+         'Comprovante de pagamento de férias não identificado pelo nome — verificar manualmente'),
+    ]
+
+    for tag, label, missing_status, missing_msg in checks:
+        if tag in tags:
+            result['items'].append(_item(label, 'ok'))
+        else:
+            note = 'FALTANDO' if missing_status == 'error' else 'Não identificado'
+            result['items'].append(_item(label, missing_status, note))
+            result['issues'].append(missing_msg)
+
+    result['status'] = 'error' if any(i['status'] == 'error' for i in result['items']) else \
+                       'warning' if any(i['status'] == 'warning' for i in result['items']) else 'ok'
+    return result
+
+
+def _ferias_subjects(fer_folder, employees):
+    subfolders = list_subfolders(fer_folder)
+    if subfolders:
+        return [(os.path.basename(sf), sf, True, None) for sf in subfolders]
+
+    files = [f for f in os.listdir(fer_folder) if os.path.isfile(os.path.join(fer_folder, f))]
+    subjects = []
+    for emp in employees or []:
+        matched = [
+            os.path.join(fer_folder, f)
+            for f in files
+            if employee_matches_folder(emp.get('nome', ''), f)
+        ]
+        if matched:
+            subjects.append((emp['nome'], fer_folder, False, matched))
+
+    if subjects:
+        return subjects
+    return [('Competência inteira', fer_folder, True, None)]
+
+
+def audit_ferias(folder_path, employees=None):
+    section = {'name': 'Férias', 'icon': '🏖️', 'items': [], 'employees': [], 'issues': []}
     fer_folder = find_folder(folder_path, FOLDER_PATTERNS['ferias'])
 
     if not fer_folder:
@@ -375,33 +445,24 @@ def audit_ferias(folder_path):
         section['items'].append(_item('Pasta Férias não encontrada', 'info', 'Sem férias no mês'))
         return section
 
-    tags = get_all_tags_in_folder(fer_folder, recurse=True)
-    files = [f for f in os.listdir(fer_folder) if os.path.isfile(os.path.join(fer_folder, f))]
+    subject_results = [
+        _audit_ferias_scope(subject_path, subject_name, recurse=recurse, file_paths=file_paths)
+        for subject_name, subject_path, recurse, file_paths in _ferias_subjects(fer_folder, employees or [])
+    ]
 
-    has_aviso = 'AVISO_FERIAS' in tags
-    has_recibo = 'RECIBO_FERIAS' in tags
-    has_comp = 'COMPROVANTE_FERIAS' in tags
-
-    if has_aviso:
-        section['items'].append(_item('Aviso de férias', 'ok'))
+    if len(subject_results) == 1 and subject_results[0]['name'] == 'Competência inteira':
+        scope = subject_results[0]
+        section['items'] = scope['items']
+        section['status'] = scope['status']
+        for issue in scope['issues']:
+            section['issues'].append(_issue(_join_scope(scope['name'], issue), 'Férias'))
     else:
-        section['items'].append(_item('Aviso de férias', 'error', 'FALTANDO'))
-        section['issues'].append(_issue('Aviso de férias não encontrado', 'Férias'))
-
-    if has_recibo:
-        section['items'].append(_item('Recibo de férias', 'ok'))
-    else:
-        section['items'].append(_item('Recibo de férias', 'error', 'FALTANDO'))
-        section['issues'].append(_issue('Recibo de férias não encontrado', 'Férias'))
-
-    if has_comp:
-        section['items'].append(_item('Comprovante de pagamento', 'ok'))
-    else:
-        # Some months the payment proof may be named differently - warn but don't fail
-        section['items'].append(_item('Comprovante de pagamento', 'warning', 'Não identificado pelo nome — verificar manualmente'))
-
-    section['status'] = 'error' if any(i['status'] == 'error' for i in section['items']) else \
-                        'warning' if any(i['status'] == 'warning' for i in section['items']) else 'ok'
+        section['employees'] = subject_results
+        section['status'] = 'error' if any(r['status'] == 'error' for r in subject_results) else \
+                            'warning' if any(r['status'] == 'warning' for r in subject_results) else 'ok'
+        for r in subject_results:
+            for issue in r['issues']:
+                section['issues'].append(_issue(f"{r['name']}: {issue}", 'Férias'))
     return section
 
 
@@ -470,7 +531,7 @@ def audit_inss_fgts(folder_path, config):
             section['items'].append(_item(label, 'ok'))
         elif req:
             section['items'].append(_item(label, 'error', 'FALTANDO'))
-            section['issues'].append(_issue(f'{label} não encontrado', 'INSS + FGTS'))
+            section['issues'].append(_issue(f'Competência/empresa: {label} não encontrado', 'INSS + FGTS'))
 
     # DCTFWeb - per config
     if dctfweb_req:
@@ -479,7 +540,7 @@ def audit_inss_fgts(folder_path, config):
             section['items'].append(_item('DCTFWeb (declaração completa)', 'ok'))
         else:
             section['items'].append(_item('DCTFWeb', 'error', 'FALTANDO'))
-            section['issues'].append(_issue('DCTFWeb não encontrado', 'INSS + FGTS'))
+            section['issues'].append(_issue('Competência/empresa: DCTFWeb não encontrado', 'INSS + FGTS'))
     else:
         has_dctf = any(t in tags for t in ['DCTFWEB', 'RECIBO_DCTFWEB'])
         if has_dctf:
@@ -493,7 +554,7 @@ def audit_inss_fgts(folder_path, config):
             section['items'].append(_item('DARF INSS', 'ok'))
         else:
             section['items'].append(_item('DARF INSS', 'error', 'FALTANDO'))
-            section['issues'].append(_issue('DARF INSS não encontrado', 'INSS + FGTS'))
+            section['issues'].append(_issue('Competência/empresa: DARF INSS não encontrado', 'INSS + FGTS'))
     else:
         if 'DARF_INSS' in tags:
             section['items'].append(_item('DARF INSS', 'ok', '(presente — bônus)'))
@@ -713,7 +774,35 @@ def audit_prev_month_comparison(folder_path, current_employees, month_num, year)
     return section
 
 
-def run_audit(folder_path):
+def _pdf_diagnostic_section(diagnostics):
+    section = {'name': 'Diagnóstico da Auditoria PDF', 'icon': '🧪', 'items': [], 'issues': [], 'status': 'info'}
+    section['items'].append(_item('Modo de análise', 'info', diagnostics.get('mode', 'rapida sem OCR')))
+    section['items'].append(_item('PDFs encontrados', 'info', str(diagnostics.get('pdf_files', 0))))
+    section['items'].append(_item('PDFs analisados agora', 'info', str(diagnostics.get('analyzed_files', 0))))
+    section['items'].append(_item('Resultados reutilizados do cache', 'info', str(diagnostics.get('cache_hits', 0))))
+    section['items'].append(_item('Páginas processadas', 'info', str(diagnostics.get('pages_processed', 0))))
+    section['items'].append(_item('Páginas com texto digital', 'info', str(diagnostics.get('digital_pages', 0))))
+    section['items'].append(_item('Páginas com OCR', 'info', str(diagnostics.get('ocr_pages', 0))))
+
+    for doc in diagnostics.get('documents_found', [])[:30]:
+        pages = doc.get('pages') or []
+        page_txt = f"páginas {min(pages)}-{max(pages)}" if pages else "páginas ?"
+        confidence = doc.get('confidence') or 'media'
+        label = f"{doc.get('documentName') or doc.get('documentType')} em {doc.get('fileName')}"
+        note = f"{page_txt}; confiança {confidence}; método {doc.get('method') or 'conteúdo'}"
+        status = 'ok' if confidence == 'alta' else 'warning'
+        section['items'].append(_item(label, status, note))
+
+    for err in diagnostics.get('errors', [])[:10]:
+        section['items'].append(_item('Aviso técnico', 'warning', err))
+
+    if any(i['status'] == 'warning' for i in section['items']):
+        section['status'] = 'warning'
+    return section
+
+
+def run_audit(folder_path, enable_ocr=False, analyze_pdf_content=False, progress_cb=None):
+    configure_pdf_audit(enable_ocr=enable_ocr, analyze_content=analyze_pdf_content or enable_ocr, progress_cb=progress_cb)
     config = load_config()
     result = {
         'folder_path': folder_path,
@@ -796,15 +885,22 @@ def run_audit(folder_path):
                 break
 
     # --- Run all section audits ---
+    if progress_cb:
+        progress_cb('Lendo estrutura da competência')
     result['sections'].append(audit_acordo_coletivo(folder_path))
     result['sections'].append(audit_declaracoes(folder_path, has_admissao, has_demissao,
                                                  has_ferias, has_troca_funcao, config))
 
-    admissao_section, _ = audit_admissoes(folder_path, admitted_this_month, config)
+    if progress_cb:
+        progress_cb('Auditando admissões')
+    admissao_result = audit_admissoes(folder_path, admitted_this_month, config)
+    admissao_section = admissao_result[0] if isinstance(admissao_result, tuple) else admissao_result
     result['sections'].append(admissao_section)
 
+    if progress_cb:
+        progress_cb('Auditando demissões, férias e documentos mensais')
     result['sections'].append(audit_demissoes(folder_path, dismissed_this_month, config, all_employees))
-    result['sections'].append(audit_ferias(folder_path))
+    result['sections'].append(audit_ferias(folder_path, all_employees))
     result['sections'].append(audit_fopag(folder_path))
     result['sections'].append(audit_inss_fgts(folder_path, config))
     result['sections'].append(audit_ponto(folder_path, all_employees, config))
@@ -816,6 +912,10 @@ def run_audit(folder_path):
         result['sections'].append(
             audit_prev_month_comparison(folder_path, all_employees, month_num, year)
         )
+
+    diagnostics = get_pdf_audit_diagnostics()
+    result['diagnostics'] = diagnostics
+    result['sections'].append(_pdf_diagnostic_section(diagnostics))
 
     # Aggregate all issues (employees only — section-level issues already cover them)
     for sec in result['sections']:

@@ -54,7 +54,6 @@ from src.medicao.auditor import run_audit as _medicao_run_audit
 from src.medicao.report import generate_report as _medicao_generate_report
 from src.medicao.scaffold import create_competencia_structure as _medicao_scaffold
 from src.medicao.organizer_dialog import OrganizerDialog as _MedicaoOrganizerDialog
-from src.medicao.splitter_dialog import SplitterDialog as _MedicaoSplitterDialog
 from src.banco import (
     obter_conexao_banco,
     obter_configuracao,
@@ -1869,31 +1868,31 @@ APP_THEMES = {
         "chart_cancelados": "#D56A7A",
     },
     "dark": {
-        "app_bg": "#0C131C",
-        "header_bg": "#121E2C",
-        "surface": "#111B27",
-        "surface_alt": "#182433",
-        "border": "#2A3D53",
-        "divider": "#2A3D53",
-        "text_primary": "#E7EEF8",
-        "text_secondary": "#9BB0C8",
-        "accent": "#3E96E0",
-        "accent_hover": "#3183CC",
+        "app_bg": "#07111B",
+        "header_bg": "#0D1A27",
+        "surface": "#0E1B29",
+        "surface_alt": "#132337",
+        "border": "#263C52",
+        "divider": "#22364A",
+        "text_primary": "#F2F6FA",
+        "text_secondary": "#A6B4C5",
+        "accent": "#19C79A",
+        "accent_hover": "#12AD86",
         "on_accent": "#F7FBFF",
-        "success_bg": "#173A2A",
-        "success_text": "#7BD2A6",
+        "success_bg": "#10392E",
+        "success_text": "#38DFAE",
         "danger_bg": "#3A2026",
         "danger_text": "#F39AA8",
-        "scroll_btn": "#384E66",
-        "scroll_btn_hover": "#4A6380",
-        "progress_bg": "#27384D",
-        "cta_border": "#2B76BF",
-        "cta_border_hover": "#3C86D0",
-        "cta_press": "#266EB3",
-        "tab_hover": "#24364B",
-        "tab_press": "#2B4260",
-        "tab_active_hover": "#3A8ED6",
-        "tab_active_press": "#2D76BD",
+        "scroll_btn": "#30465E",
+        "scroll_btn_hover": "#405A75",
+        "progress_bg": "#23364B",
+        "cta_border": "#1ED2A5",
+        "cta_border_hover": "#43E0B9",
+        "cta_press": "#0E9775",
+        "tab_hover": "#172C41",
+        "tab_press": "#1D3852",
+        "tab_active_hover": "#20D4A8",
+        "tab_active_press": "#10A47F",
         "metric_initial_bg": "#163150",
         "metric_initial_title": "#9CC5EC",
         "metric_initial_value": "#E6F2FF",
@@ -1919,14 +1918,14 @@ APP_THEMES = {
         "chart_plot_bg": "#182433",
         "chart_grid": "#38506A",
         "chart_axis": "#A6BCD4",
-        "chart_bar_primary": "#4A9CE4",
-        "chart_bar_secondary": "#77B5EB",
-        "chart_line": "#A4D0F4",
+        "chart_bar_primary": "#20D4B0",
+        "chart_bar_secondary": "#0F899E",
+        "chart_line": "#22D0AA",
         "chart_cancelados": "#E07D8D",
     },
 }
 
-tema_salvo = obter_configuracao("tema_interface", "light").strip().lower()
+tema_salvo = obter_configuracao("tema_interface", "dark").strip().lower()
 current_theme_mode = tema_salvo if tema_salvo in APP_THEMES else "light"
 UI_THEME = dict(APP_THEMES[current_theme_mode])
 ctk.set_appearance_mode("dark" if current_theme_mode == "dark" else "light")
@@ -3353,6 +3352,8 @@ def aplicar_tema_interface():
     app.configure(fg_color=UI_THEME["app_bg"])
 
     _safe_config(container_scroll if "container_scroll" in globals() else None, fg_color=UI_THEME["app_bg"])
+    _safe_config(ui_refs.get("sidebar"), fg_color=UI_THEME["header_bg"])
+    _safe_config(ui_refs.get("content_shell"), fg_color=UI_THEME["app_bg"], border_color=UI_THEME["border"])
     scroll_canvas = ui_refs.get("scroll_canvas")
     if scroll_canvas is not None:
         try:
@@ -4003,6 +4004,19 @@ def _criar_card(parent, fg_color=None, corner_radius=18, border_width=1):
     )
 
 
+def _criar_badge_icone(parent, texto, cor=None, tamanho=46):
+    return ctk.CTkLabel(
+        parent,
+        text=texto,
+        width=tamanho,
+        height=tamanho,
+        corner_radius=14,
+        fg_color=cor or UI_THEME["accent"],
+        text_color=UI_THEME["on_accent"],
+        font=ctk.CTkFont(family="Segoe UI", size=22, weight="bold"),
+    )
+
+
 # ─── _normalizar_hex_cor/_hex_para_rgb/_rgb_para_hex/_interpolar_cor  →  src/utils.py
 
 def _animar_estilo_botao(botao, alvo_fg, alvo_texto, alvo_borda, passos=7, delay_ms=16):
@@ -4441,8 +4455,13 @@ def _criar_filtro_periodo(parent):
 
     card = _criar_card(parent, corner_radius=20)
     card.pack(fill="x", padx=18, pady=(0, 10))
-    card.grid_columnconfigure((0, 1, 2, 3, 4, 5), weight=1)
+    card.grid_columnconfigure(0, weight=0)
+    card.grid_columnconfigure((1, 2, 3, 4), weight=1)
+    card.grid_columnconfigure((5, 6), weight=0)
     ui_refs["filtro_card"] = card
+
+    icon_box = _criar_badge_icone(card, "📅", cor="#0F7F7C", tamanho=54)
+    icon_box.grid(row=0, column=0, rowspan=3, sticky="nw", padx=(20, 14), pady=(18, 0))
 
     titulo = ctk.CTkLabel(
         card,
@@ -4450,7 +4469,7 @@ def _criar_filtro_periodo(parent):
         font=ctk.CTkFont(family="Segoe UI", size=19, weight="bold"),
         text_color=UI_THEME["text_primary"],
     )
-    titulo.grid(row=0, column=0, columnspan=6, sticky="w", padx=20, pady=(16, 4))
+    titulo.grid(row=0, column=1, columnspan=6, sticky="w", padx=0, pady=(18, 4))
     ui_refs["filtro_titulo"] = titulo
 
     subtitulo = ctk.CTkLabel(
@@ -4459,12 +4478,12 @@ def _criar_filtro_periodo(parent):
         font=ctk.CTkFont(family="Segoe UI", size=11),
         text_color=UI_THEME["text_secondary"],
     )
-    subtitulo.grid(row=1, column=0, columnspan=6, sticky="w", padx=20, pady=(0, 12))
+    subtitulo.grid(row=1, column=1, columnspan=6, sticky="w", padx=0, pady=(0, 16))
     ui_refs["filtro_subtitulo"] = subtitulo
 
     icon_inicio = ctk.CTkLabel(card, text="📅", font=ctk.CTkFont(size=16), text_color=UI_THEME["text_secondary"])
     icon_inicio.grid(
-        row=2, column=0, sticky="e", padx=(20, 6), pady=(0, 16)
+        row=2, column=1, sticky="e", padx=(0, 6), pady=(0, 20)
     )
     ui_refs["filtro_icon_inicio"] = icon_inicio
 
@@ -4478,17 +4497,17 @@ def _criar_filtro_periodo(parent):
         border_width=1,
         font=ctk.CTkFont(family="Segoe UI", size=13),
     )
-    dashboard_data_inicio_entry.grid(row=2, column=1, sticky="ew", padx=(0, 8), pady=(0, 16))
+    dashboard_data_inicio_entry.grid(row=2, column=2, sticky="ew", padx=(0, 14), pady=(0, 20))
 
     lbl_ate = ctk.CTkLabel(card, text="até", font=ctk.CTkFont(family="Segoe UI", size=12), text_color=UI_THEME["text_secondary"])
     lbl_ate.grid(
-        row=2, column=2, padx=4, pady=(0, 16)
+        row=2, column=3, padx=4, pady=(0, 20)
     )
     ui_refs["filtro_ate"] = lbl_ate
 
     icon_fim = ctk.CTkLabel(card, text="📅", font=ctk.CTkFont(size=16), text_color=UI_THEME["text_secondary"])
     icon_fim.grid(
-        row=2, column=3, sticky="e", padx=(8, 6), pady=(0, 16)
+        row=2, column=4, sticky="e", padx=(8, 6), pady=(0, 20)
     )
     ui_refs["filtro_icon_fim"] = icon_fim
 
@@ -4502,7 +4521,7 @@ def _criar_filtro_periodo(parent):
         border_width=1,
         font=ctk.CTkFont(family="Segoe UI", size=13),
     )
-    dashboard_data_fim_entry.grid(row=2, column=4, sticky="ew", padx=(0, 10), pady=(0, 16))
+    dashboard_data_fim_entry.grid(row=2, column=5, sticky="ew", padx=(0, 14), pady=(0, 20))
 
     buscar_btn = ctk.CTkButton(
         card,
@@ -4518,7 +4537,7 @@ def _criar_filtro_periodo(parent):
         font=ctk.CTkFont(family="Segoe UI", size=14, weight="bold"),
         command=aplicar_filtro_dashboard,
     )
-    buscar_btn.grid(row=2, column=5, sticky="e", padx=(6, 20), pady=(0, 16))
+    buscar_btn.grid(row=2, column=6, sticky="e", padx=(0, 20), pady=(0, 20))
     ui_refs["buscar_btn"] = buscar_btn
     _aplicar_microinteracao_cta(
         buscar_btn,
@@ -4954,52 +4973,119 @@ def _criar_navegacao_telas(parent):
         }
     )
 
-    nav_card = _criar_card(parent, corner_radius=18)
-    nav_card.pack(fill="x", padx=18, pady=(0, 10))
+    nav_card = ctk.CTkFrame(parent, fg_color="transparent")
+    nav_card.pack(fill="both", expand=True, padx=18, pady=18)
     ui_refs["screen_nav_card"] = nav_card
 
-    telas = [(sid, SCREEN_NAV_CATALOG.get(sid, sid.title())) for sid in SCREEN_ORDER_ATUAL]
-    for idx in range(len(telas)):
-        nav_card.grid_columnconfigure(idx, weight=1)
-    nav_card.grid_columnconfigure(len(telas), weight=0)
+    logo_frame = ctk.CTkFrame(nav_card, fg_color="transparent")
+    logo_frame.pack(fill="x", pady=(8, 30))
+    if os.path.exists(LOGO_PATH):
+        try:
+            with Image.open(LOGO_PATH) as logo_img:
+                logo_img.thumbnail((190, 78), Image.LANCZOS)
+                logo_ctk = ctk.CTkImage(light_image=logo_img.copy(), dark_image=logo_img.copy(), size=logo_img.size)
+                app._sidebar_logo = logo_ctk
+                ctk.CTkLabel(logo_frame, text="", image=logo_ctk).pack(anchor="w")
+        except Exception:
+            ctk.CTkLabel(logo_frame, text="Horizonte\nLOGÍSTICA", justify="left",
+                         font=ctk.CTkFont(family="Segoe UI", size=18, weight="bold"),
+                         text_color=UI_THEME["text_primary"]).pack(anchor="w")
+    else:
+        ctk.CTkLabel(logo_frame, text="Horizonte\nLOGÍSTICA", justify="left",
+                     font=ctk.CTkFont(family="Segoe UI", size=18, weight="bold"),
+                     text_color=UI_THEME["text_primary"]).pack(anchor="w")
 
-    for idx, (id_tela, titulo) in enumerate(telas):
+    telas = [(sid, SCREEN_NAV_CATALOG.get(sid, sid.title())) for sid in SCREEN_ORDER_ATUAL]
+    nav_icons = {
+        "dashboard": "⌂",
+        "relatorios": "▣",
+        "alteracoes": "✣",
+        "configuracoes": "⚙",
+        "medicao": "⊗",
+    }
+
+    for id_tela, titulo in telas:
         btn = ctk.CTkButton(
             nav_card,
-            text=titulo,
-            height=42,
-            corner_radius=13,
+            text=f"{nav_icons.get(id_tela, '•')}   {titulo}",
+            height=48,
+            corner_radius=12,
             border_width=1,
             fg_color=SCREEN_NAV_STYLES["normal_fg"],
             border_color=UI_THEME["border"],
             hover_color=SCREEN_NAV_STYLES["hover_fg"],
             text_color=SCREEN_NAV_STYLES["normal_text"],
-            font=ctk.CTkFont(family="Segoe UI", size=12, weight="bold"),
+            anchor="w",
+            font=ctk.CTkFont(family="Segoe UI", size=14, weight="bold"),
             command=lambda n=id_tela: _navegar_tela_com_feedback(n),
         )
-        btn.grid(row=0, column=idx, padx=6, pady=10, sticky="ew")
+        btn.pack(fill="x", pady=5)
         screen_nav_buttons[id_tela] = btn
+
+    spacer = ctk.CTkFrame(nav_card, fg_color="transparent")
+    spacer.pack(fill="both", expand=True)
+
+    quick = _criar_card(nav_card, corner_radius=18)
+    quick.pack(fill="x", pady=(18, 12))
+    _criar_badge_icone(quick, "↗", cor="#0F7F7C", tamanho=42).pack(anchor="w", padx=18, pady=(18, 8))
+    ctk.CTkLabel(quick, text="Resumo rápido",
+                 font=ctk.CTkFont(family="Segoe UI", size=14, weight="bold"),
+                 text_color=UI_THEME["text_primary"]).pack(anchor="w", padx=18, pady=(0, 6))
+    ctk.CTkLabel(quick, text="Visão geral do faturamento\nem tempo real.", justify="left",
+                 font=ctk.CTkFont(family="Segoe UI", size=11),
+                 text_color=UI_THEME["text_secondary"]).pack(anchor="w", padx=18, pady=(0, 18))
 
     btn_reordenar = ctk.CTkButton(
         nav_card,
-        text="Organizar botões",
-        width=220,
-        height=38,
+        text="✣   Organizar botões",
+        height=42,
         corner_radius=12,
         border_width=1,
         fg_color=UI_THEME["surface_alt"],
         border_color=UI_THEME["border"],
         hover_color=UI_THEME["tab_hover"],
         text_color=UI_THEME["text_primary"],
-        font=ctk.CTkFont(family="Segoe UI", size=11, weight="bold"),
+        anchor="w",
+        font=ctk.CTkFont(family="Segoe UI", size=12, weight="bold"),
         command=abrir_dialogo_reordenar_interface,
     )
-    btn_reordenar.grid(row=0, column=len(telas), padx=(0, 10), pady=10, sticky="e")
+    btn_reordenar.pack(fill="x", pady=(0, 8))
     ui_refs["btn_reordenar_interface"] = btn_reordenar
 
 
 def _criar_tela_dashboard(parent):
     tela = ctk.CTkFrame(parent, fg_color=UI_THEME["app_bg"])
+    meses_pt = [
+        "", "Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho",
+        "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro",
+    ]
+    hoje = datetime.now()
+    data_hoje = f"{hoje.day:02d} de {meses_pt[hoje.month]} de {hoje.year}"
+    hero = ctk.CTkFrame(tela, fg_color="transparent")
+    hero.pack(fill="x", padx=18, pady=(14, 12))
+    hero.grid_columnconfigure(0, weight=1)
+
+    ctk.CTkLabel(
+        hero,
+        text="Olá, bem-vindo! 👋",
+        font=ctk.CTkFont(family="Segoe UI", size=26, weight="bold"),
+        text_color=UI_THEME["text_primary"],
+    ).grid(row=0, column=0, sticky="w")
+    ctk.CTkLabel(
+        hero,
+        text="Aqui está o resumo do seu faturamento.",
+        font=ctk.CTkFont(family="Segoe UI", size=13),
+        text_color=UI_THEME["text_secondary"],
+    ).grid(row=1, column=0, sticky="w", pady=(4, 0))
+
+    data_badge = _criar_card(hero, fg_color=UI_THEME["surface_alt"], corner_radius=14)
+    data_badge.grid(row=0, column=1, rowspan=2, sticky="e", padx=(12, 0))
+    ctk.CTkLabel(
+        data_badge,
+        text=f"📅   {data_hoje}",
+        font=ctk.CTkFont(family="Segoe UI", size=13, weight="bold"),
+        text_color=UI_THEME["text_primary"],
+    ).pack(padx=18, pady=12)
     _criar_filtro_periodo(tela)
     _criar_graficos_dashboard(tela)
     _criar_resumo_periodo(tela)
@@ -5357,7 +5443,7 @@ def _criar_tela_medicao(parent):
     tela = ctk.CTkFrame(parent, fg_color=UI_THEME["app_bg"])
 
     # Shared state — use lists so closures in nested functions can mutate them
-    _state = {"folder": "", "report_path": None}
+    _state = {"folder": "", "report_path": None, "diagnostic_path": None}
 
     # ── Header ──────────────────────────────────────────────────────────
     hdr = _criar_card(tela, corner_radius=20)
@@ -5391,8 +5477,10 @@ def _criar_tela_medicao(parent):
             folder_var.set(d)
             _state["folder"] = d
             _state["report_path"] = None
+            _state["diagnostic_path"] = None
             _set_status(f"Pasta: {os.path.basename(d)}", UI_THEME["text_secondary"])
             btn_rel.configure(state="disabled")
+            btn_diag.configure(state="disabled")
 
     ctk.CTkButton(sel_row, text="Procurar…", width=110, height=36, corner_radius=10,
                   command=_selecionar_pasta,
@@ -5407,6 +5495,15 @@ def _criar_tela_medicao(parent):
                             fg_color="#27ae60", hover_color="#1e8449",
                             command=lambda: _iniciar())
     btn_run.pack(fill="x", padx=18, pady=(14, 8))
+
+    ocr_var = tk.BooleanVar(value=False)
+    ctk.CTkCheckBox(
+        act_card,
+        text="Análise profunda com OCR para PDFs escaneados",
+        variable=ocr_var,
+        font=ctk.CTkFont(family="Segoe UI", size=11),
+        text_color=UI_THEME["text_primary"],
+    ).pack(anchor="w", padx=18, pady=(0, 8))
 
     # ttk.Progressbar — identical to what worked in the standalone app
     progress_style = ttk.Style()
@@ -5426,14 +5523,22 @@ def _criar_tela_medicao(parent):
                              corner_radius=11, state="disabled",
                              font=ctk.CTkFont(family="Segoe UI", size=12),
                              command=lambda: _ver_relatorio())
-    btn_rel.pack(fill="x", padx=18, pady=(0, 14))
+    btn_rel.pack(fill="x", padx=18, pady=(0, 8))
+
+    btn_diag = ctk.CTkButton(act_card, text="🧪  Abrir Diagnóstico da Auditoria", height=34,
+                             corner_radius=11, state="disabled",
+                             fg_color=UI_THEME["surface_alt"], hover_color=UI_THEME["tab_hover"],
+                             text_color=UI_THEME["text_primary"],
+                             font=ctk.CTkFont(family="Segoe UI", size=11),
+                             command=lambda: _ver_diagnostico())
+    btn_diag.pack(fill="x", padx=18, pady=(0, 14))
 
     # ── Secondary buttons ────────────────────────────────────────────────
     sec_card = _criar_card(tela, corner_radius=20)
     sec_card.pack(fill="x", padx=18, pady=(0, 10))
     sec_row = ctk.CTkFrame(sec_card, fg_color="transparent")
     sec_row.pack(fill="x", padx=18, pady=12)
-    sec_row.grid_columnconfigure((0, 1, 2), weight=1)
+    sec_row.grid_columnconfigure((0, 1), weight=1)
 
     ctk.CTkButton(sec_row, text="📁  Criar Pastas Modelo", height=38, corner_radius=11,
                   font=ctk.CTkFont(family="Segoe UI", size=11),
@@ -5445,13 +5550,7 @@ def _criar_tela_medicao(parent):
                   font=ctk.CTkFont(family="Segoe UI", size=11),
                   fg_color="#7d5c9e", hover_color="#6a4d88",
                   command=lambda: _MedicaoOrganizerDialog(tela, folder_var.get())
-                  ).grid(row=0, column=1, sticky="ew", padx=(4, 4))
-
-    ctk.CTkButton(sec_row, text="✂️  Separar PDF", height=38, corner_radius=11,
-                  font=ctk.CTkFont(family="Segoe UI", size=11),
-                  fg_color="#c0392b", hover_color="#a93226",
-                  command=lambda: _MedicaoSplitterDialog(tela, folder_var.get())
-                  ).grid(row=0, column=2, sticky="ew", padx=(4, 0))
+                  ).grid(row=0, column=1, sticky="ew", padx=(4, 0))
 
     # ── Helpers ──────────────────────────────────────────────────────────
     def _set_status(msg, color):
@@ -5470,6 +5569,7 @@ def _criar_tela_medicao(parent):
             _set_status(msg, color)
             btn_run.configure(state="normal")
             btn_rel.configure(state="normal")
+            btn_diag.configure(state="normal")
         except Exception as exc:
             _log(f"[_audit_done] widget error: {exc}")
         if report_path and os.path.isfile(report_path):
@@ -5483,6 +5583,7 @@ def _criar_tela_medicao(parent):
         try:
             _set_status(f"Erro: {err_msg}", "#e74c3c")
             btn_run.configure(state="normal")
+            btn_diag.configure(state="normal" if _state.get("diagnostic_path") else "disabled")
         except Exception:
             pass
         messagebox.showerror("Erro na auditoria", err_msg)
@@ -5495,28 +5596,83 @@ def _criar_tela_medicao(parent):
         if not os.path.isdir(folder):
             messagebox.showerror("Erro", f"Pasta não encontrada:\n{folder}")
             return
+        enable_ocr = bool(ocr_var.get())
+        if enable_ocr:
+            ok = messagebox.askyesno(
+                "Análise profunda com OCR",
+                "O OCR pode demorar em PDFs grandes. Deseja continuar com a análise profunda?"
+            )
+            if not ok:
+                return
 
         btn_run.configure(state="disabled")
         btn_rel.configure(state="disabled")
+        btn_diag.configure(state="disabled")
         progress.start(12)
-        _set_status("Auditando… aguarde.", UI_THEME.get("accent", "#2980b9"))
+        _set_status("Auditando em modo profundo com OCR..." if enable_ocr else "Auditando em modo rápido...", UI_THEME.get("accent", "#2980b9"))
 
         # Clear previous log for this run
         try:
             os.makedirs(os.path.dirname(_LOG), exist_ok=True)
             with open(_LOG, "w", encoding="utf-8") as _f:
                 _f.write(f"[audit] folder={folder}\n")
+                _f.write(f"[audit] mode={'ocr' if enable_ocr else 'safe'}\n")
         except Exception:
             pass
+
+        def _progress_msg(msg):
+            _log(f"[progress] {msg}")
+            app.after(0, lambda m=msg: _set_status(m, UI_THEME.get("accent", "#2980b9")))
+
+        def _write_diagnostic(result):
+            diagnostics = result.get("diagnostics", {})
+            path = os.path.join(os.path.dirname(_LOG), "medicao_diagnostico.txt")
+            try:
+                lines = [
+                    "Diagnóstico da Auditoria de Medição",
+                    f"Pasta: {folder}",
+                    f"Modo: {diagnostics.get('mode', '-')}",
+                    f"PDFs encontrados: {diagnostics.get('pdf_files', 0)}",
+                    f"PDFs analisados agora: {diagnostics.get('analyzed_files', 0)}",
+                    f"Cache reutilizado: {diagnostics.get('cache_hits', 0)}",
+                    f"Páginas vistas: {diagnostics.get('pages_seen', 0)}",
+                    f"Páginas processadas: {diagnostics.get('pages_processed', 0)}",
+                    f"Páginas com OCR: {diagnostics.get('ocr_pages', 0)}",
+                    "",
+                    "Documentos encontrados:",
+                ]
+                for doc in diagnostics.get("documents_found", [])[:80]:
+                    pages = doc.get("pages") or []
+                    page_txt = f"{min(pages)}-{max(pages)}" if pages else "?"
+                    lines.append(
+                        f"- {doc.get('documentName')} | {doc.get('fileName')} | páginas {page_txt} | confiança {doc.get('confidence')} | {doc.get('method')}"
+                    )
+                if diagnostics.get("errors"):
+                    lines.append("")
+                    lines.append("Avisos/erros:")
+                    lines.extend(f"- {err}" for err in diagnostics.get("errors", [])[:80])
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write("\n".join(lines))
+                return path
+            except Exception as exc:
+                _log(f"[diagnostic] write failed: {exc}")
+                return None
 
         def _worker():
             try:
                 _log("[audit] run_audit starting")
-                result = _medicao_run_audit(folder)
+                result = _medicao_run_audit(
+                    folder,
+                    enable_ocr=enable_ocr,
+                    analyze_pdf_content=enable_ocr,
+                    progress_cb=_progress_msg,
+                )
                 _log("[audit] run_audit done, generating report")
                 rpath = _medicao_generate_report(result, folder)
                 _log(f"[audit] report written: {rpath}")
                 _state["report_path"] = rpath
+                _state["diagnostic_path"] = _write_diagnostic(result)
                 n = len(result.get("all_issues", []))
                 ov = result.get("overall_status", "ok")
                 if ov == "ok":
@@ -5540,6 +5696,13 @@ def _criar_tela_medicao(parent):
 
     def _ver_relatorio():
         p = _state.get("report_path")
+        if p and os.path.isfile(p):
+            _abrir_relatorio_file(p)
+        else:
+            messagebox.showwarning("Atenção", "Execute a auditoria primeiro.")
+
+    def _ver_diagnostico():
+        p = _state.get("diagnostic_path")
         if p and os.path.isfile(p):
             _abrir_relatorio_file(p)
         else:
@@ -5610,14 +5773,41 @@ def construir_tela_principal():
     container_scroll.pack(fill="both", expand=True)
     ui_refs["container_shell"] = container_scroll
 
-    scroll_canvas = tk.Canvas(
+    container_scroll.grid_columnconfigure(0, weight=0)
+    container_scroll.grid_columnconfigure(1, weight=1)
+    container_scroll.grid_rowconfigure(0, weight=1)
+
+    sidebar = ctk.CTkFrame(
         container_scroll,
+        width=300,
+        fg_color=UI_THEME["header_bg"],
+        corner_radius=0,
+        border_width=0,
+    )
+    sidebar.grid(row=0, column=0, sticky="ns")
+    sidebar.grid_propagate(False)
+    ui_refs["sidebar"] = sidebar
+
+    content_shell = ctk.CTkFrame(
+        container_scroll,
+        fg_color=UI_THEME["app_bg"],
+        corner_radius=24,
+        border_width=1,
+        border_color=UI_THEME["border"],
+    )
+    content_shell.grid(row=0, column=1, sticky="nsew", padx=(0, 10), pady=10)
+    content_shell.grid_columnconfigure(0, weight=1)
+    content_shell.grid_rowconfigure(0, weight=1)
+    ui_refs["content_shell"] = content_shell
+
+    scroll_canvas = tk.Canvas(
+        content_shell,
         highlightthickness=0,
         bd=0,
         bg=UI_THEME["app_bg"],
     )
     scroll_vertical = tk.Scrollbar(
-        container_scroll,
+        content_shell,
         orient="vertical",
         jump=1,
         relief="flat",
@@ -5658,8 +5848,6 @@ def construir_tela_principal():
     scroll_vertical.configure(command=_comando_scroll)
     scroll_canvas.configure(yscrollcommand=scroll_vertical.set)
 
-    container_scroll.grid_columnconfigure(0, weight=1)
-    container_scroll.grid_rowconfigure(0, weight=1)
     scroll_canvas.grid(row=0, column=0, sticky="nsew")
     scroll_vertical.grid(row=0, column=1, sticky="ns")
     ui_refs["scroll_canvas"] = scroll_canvas
@@ -5729,7 +5917,7 @@ def construir_tela_principal():
     ui_refs["main_frame"] = main_frame
 
     _aplicar_logo_watermark(main_frame)
-    _criar_navegacao_telas(main_frame)
+    _criar_navegacao_telas(sidebar)
 
     screen_host = ctk.CTkFrame(main_frame, fg_color=UI_THEME["app_bg"])
     screen_host.pack(fill="both", expand=True)
@@ -5756,8 +5944,8 @@ aplicar_tema_interface()
 
 # Ajusta a janela ao novo layout dashboard.
 app.update_idletasks()
-largura_ideal = min(max(900, app.winfo_reqwidth()), largura_tela - 10)
-altura_ideal = min(max(680, app.winfo_reqheight()), altura_tela - 10)
+largura_ideal = min(max(1180, app.winfo_reqwidth()), largura_tela - 10)
+altura_ideal = min(max(760, app.winfo_reqheight()), altura_tela - 10)
 centralizar_janela(app, largura_ideal, altura_ideal)
 
 app.after(120, atualizar_dashboard)
