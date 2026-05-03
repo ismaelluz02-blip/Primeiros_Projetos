@@ -4,7 +4,8 @@ Execute com: pytest tests/test_relatorios.py -v
 """
 
 import os
-import tempfile
+from pathlib import Path
+from uuid import uuid4
 import pytest
 import pandas as pd
 from datetime import datetime
@@ -14,6 +15,16 @@ from src.relatorios import (
     _montar_df_relatorio_excel,
     escrever_excel_faturamento,
 )
+
+TEST_OUTPUT_DIR = Path(__file__).resolve().parents[1] / "_tmp" / "pytest" / "relatorios"
+
+
+def _arquivo_saida(nome):
+    TEST_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    stem = Path(nome).stem
+    suffix = Path(nome).suffix
+    arquivo = TEST_OUTPUT_DIR / f"{stem}_{uuid4().hex}{suffix}"
+    return str(arquivo)
 
 
 # ---------------------------------------------------------------------------
@@ -118,17 +129,15 @@ class TestMontarDfRelatorioExcel:
 
 class TestEscreverExcelFaturamento:
     def test_cria_arquivo_xlsx(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            arquivo = os.path.join(tmpdir, "teste_faturamento.xlsx")
-            resultado = escrever_excel_faturamento(_df_base(), arquivo)
-            assert resultado["ok"] is True
-            assert os.path.exists(arquivo)
+        arquivo = _arquivo_saida("teste_faturamento.xlsx")
+        resultado = escrever_excel_faturamento(_df_base(), arquivo)
+        assert resultado["ok"] is True
+        assert os.path.exists(arquivo)
 
     def test_retorna_total_correto(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            arquivo = os.path.join(tmpdir, "teste.xlsx")
-            resultado = escrever_excel_faturamento(_df_base(), arquivo)
-            assert resultado["total_documentos"] == 2
+        arquivo = _arquivo_saida("teste.xlsx")
+        resultado = escrever_excel_faturamento(_df_base(), arquivo)
+        assert resultado["total_documentos"] == 2
 
     def test_falha_com_caminho_invalido(self):
         resultado = escrever_excel_faturamento(_df_base(), "/caminho/inexistente/arquivo.xlsx")
@@ -138,9 +147,11 @@ class TestEscreverExcelFaturamento:
     def test_arquivo_tem_duas_abas(self):
         """O Excel gerado deve ter as abas 'Faturamento AC' e 'Faturamento AC 2'."""
         import openpyxl
-        with tempfile.TemporaryDirectory() as tmpdir:
-            arquivo = os.path.join(tmpdir, "abas.xlsx")
-            escrever_excel_faturamento(_df_base(), arquivo)
-            wb = openpyxl.load_workbook(arquivo)
+        arquivo = _arquivo_saida("abas.xlsx")
+        escrever_excel_faturamento(_df_base(), arquivo)
+        wb = openpyxl.load_workbook(arquivo)
+        try:
             assert "Faturamento AC" in wb.sheetnames
             assert "Faturamento AC 2" in wb.sheetnames
+        finally:
+            wb.close()

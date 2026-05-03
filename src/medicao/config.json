@@ -1,0 +1,10 @@
+{
+    "ponto_exempt": ["ISMAEL LUZ GOMES", "ISMAEL LUZ"],
+    "epi_exempt": ["GEOVANE CAETANO MARQUES"],
+    "esocial_substitutes_ctps": true,
+    "aso_demissional_exempt_months": 3,
+    "dctfweb_required": false,
+    "darf_inss_required": false,
+    "parcelamentos_can_be_empty": true,
+    "contract_number": "2025001801"
+}

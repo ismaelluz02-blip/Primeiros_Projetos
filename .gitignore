@@ -1,5 +1,9 @@
-﻿__pycache__/
+__pycache__/
 build/
 dist/
 *.pyc
+*.pyc.*
 faturamento.db
+_dados_app/
+_tmp/
+logs/

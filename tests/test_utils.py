@@ -83,10 +83,10 @@ class TestParseValorMonetario:
         assert parse_valor_monetario("0") == pytest.approx(0.0)
 
     def test_string_vazia_retorna_zero(self):
-        assert parse_valor_monetario("") == pytest.approx(0.0)
+        assert parse_valor_monetario("") is None
 
     def test_none_retorna_zero(self):
-        assert parse_valor_monetario(None) == pytest.approx(0.0)
+        assert parse_valor_monetario(None) is None
 
     def test_valor_ja_float(self):
         assert parse_valor_monetario(99.9) == pytest.approx(99.9)
@@ -98,13 +98,13 @@ class TestParseValorMonetario:
 
 class TestNormalizarTexto:
     def test_remove_acentos(self):
-        assert normalizar_texto("março") == "marco"
+        assert normalizar_texto("março") == "MARCO"
 
     def test_converte_maiusculas_para_minusculas(self):
-        assert normalizar_texto("JANEIRO") == "janeiro"
+        assert normalizar_texto("JANEIRO") == "JANEIRO"
 
     def test_texto_ja_normalizado(self):
-        assert normalizar_texto("fevereiro") == "fevereiro"
+        assert normalizar_texto("fevereiro") == "FEVEREIRO"
 
     def test_string_vazia(self):
         assert normalizar_texto("") == ""

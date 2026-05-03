@@ -50,6 +50,11 @@ from src.utils import (
 )
 
 import src.config as _cfg
+from src.medicao.auditor import run_audit as _medicao_run_audit
+from src.medicao.report import generate_report as _medicao_generate_report
+from src.medicao.scaffold import create_competencia_structure as _medicao_scaffold
+from src.medicao.organizer_dialog import OrganizerDialog as _MedicaoOrganizerDialog
+from src.medicao.splitter_dialog import SplitterDialog as _MedicaoSplitterDialog
 from src.banco import (
     obter_conexao_banco,
     obter_configuracao,
@@ -1761,6 +1766,13 @@ class App(ctk.CTk):
                     frame.pack_forget()
         self.current_screen = nome_tela
         _configurar_nav_tela_ativa(nome_tela)
+        # Reset scroll to top so short screens never show blank space above content
+        try:
+            canvas = ui_refs.get("scroll_canvas")
+            if canvas is not None:
+                canvas.yview_moveto(0)
+        except Exception:
+            pass
 
 
 # DPI awareness por monitor (evita janela borrada ao arrastar entre telas)
@@ -3297,6 +3309,7 @@ SCREEN_NAV_CATALOG = {
     "relatorios": "Relatórios",
     "alteracoes": "Alterações",
     "configuracoes": "Configurações",
+    "medicao": "Medição",
 }
 SCREEN_NAV_DEFAULT_ORDER = list(SCREEN_NAV_CATALOG.keys())
 ACTION_HOST_SCREENS = ["relatorios", "alteracoes", "configuracoes"]
@@ -5319,6 +5332,241 @@ def _criar_tela_alteracoes(parent):
     return tela
 
 
+def _criar_tela_medicao(parent):
+    import threading
+    import traceback
+    from tkinter import simpledialog
+
+    _LOG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs", "medicao_audit.log")
+
+    def _log(msg):
+        try:
+            os.makedirs(os.path.dirname(_LOG), exist_ok=True)
+            with open(_LOG, "a", encoding="utf-8") as _f:
+                _f.write(f"{msg}\n")
+        except Exception:
+            pass
+
+    def _abrir_relatorio_file(path):
+        try:
+            os.startfile(path)
+        except Exception:
+            import webbrowser
+            webbrowser.open(f"file:///{path.replace(os.sep, '/')}")
+
+    tela = ctk.CTkFrame(parent, fg_color=UI_THEME["app_bg"])
+
+    # Shared state — use lists so closures in nested functions can mutate them
+    _state = {"folder": "", "report_path": None}
+
+    # ── Header ──────────────────────────────────────────────────────────
+    hdr = _criar_card(tela, corner_radius=20)
+    hdr.pack(fill="x", padx=18, pady=(0, 10))
+    ctk.CTkLabel(hdr, text="🔍  Auditoria de Medição — Energisa",
+                 font=ctk.CTkFont(family="Segoe UI", size=18, weight="bold"),
+                 text_color=UI_THEME["text_primary"]).pack(anchor="w", padx=18, pady=(14, 2))
+    ctk.CTkLabel(hdr, text="Horizonte Logística — Verificação de Documentação Mensal",
+                 font=ctk.CTkFont(family="Segoe UI", size=11),
+                 text_color=UI_THEME["text_secondary"]).pack(anchor="w", padx=18, pady=(0, 14))
+
+    # ── Folder selection ─────────────────────────────────────────────────
+    sel_card = _criar_card(tela, corner_radius=20)
+    sel_card.pack(fill="x", padx=18, pady=(0, 10))
+    ctk.CTkLabel(sel_card, text="Pasta da Competência:",
+                 font=ctk.CTkFont(family="Segoe UI", size=12, weight="bold"),
+                 text_color=UI_THEME["text_primary"], anchor="w").pack(fill="x", padx=18, pady=(14, 4))
+
+    folder_var = tk.StringVar()
+    sel_row = ctk.CTkFrame(sel_card, fg_color="transparent")
+    sel_row.pack(fill="x", padx=18, pady=(0, 14))
+    sel_row.grid_columnconfigure(0, weight=1)
+    ctk.CTkEntry(sel_row, textvariable=folder_var,
+                 font=ctk.CTkFont(family="Segoe UI", size=11), height=36,
+                 corner_radius=10).grid(row=0, column=0, sticky="ew", padx=(0, 8))
+
+    def _selecionar_pasta():
+        last = folder_var.get() or "C:/Users/ismae/OneDrive/Área de Trabalho/MEDIÇÕES HORIZONTRE X ENERGISA/2026"
+        d = filedialog.askdirectory(title="Selecione a pasta da competência", initialdir=last)
+        if d:
+            folder_var.set(d)
+            _state["folder"] = d
+            _state["report_path"] = None
+            _set_status(f"Pasta: {os.path.basename(d)}", UI_THEME["text_secondary"])
+            btn_rel.configure(state="disabled")
+
+    ctk.CTkButton(sel_row, text="Procurar…", width=110, height=36, corner_radius=10,
+                  command=_selecionar_pasta,
+                  font=ctk.CTkFont(family="Segoe UI", size=11)).grid(row=0, column=1)
+
+    # ── Audit card ───────────────────────────────────────────────────────
+    act_card = _criar_card(tela, corner_radius=20)
+    act_card.pack(fill="x", padx=18, pady=(0, 10))
+
+    btn_run = ctk.CTkButton(act_card, text="▶  INICIAR AUDITORIA", height=46, corner_radius=13,
+                            font=ctk.CTkFont(family="Segoe UI", size=14, weight="bold"),
+                            fg_color="#27ae60", hover_color="#1e8449",
+                            command=lambda: _iniciar())
+    btn_run.pack(fill="x", padx=18, pady=(14, 8))
+
+    # ttk.Progressbar — identical to what worked in the standalone app
+    progress_style = ttk.Style()
+    progress_style.configure("Medicao.Horizontal.TProgressbar",
+                              troughcolor=UI_THEME.get("surface_alt", "#e0e0e0"),
+                              background=UI_THEME.get("accent", "#2980b9"), thickness=8)
+    progress = ttk.Progressbar(act_card, mode="indeterminate", style="Medicao.Horizontal.TProgressbar")
+    progress.pack(fill="x", padx=18, pady=(0, 6))
+
+    status_var = tk.StringVar(value="Selecione a pasta da competência para iniciar.")
+    status_lbl = ctk.CTkLabel(act_card, textvariable=status_var,
+                               font=ctk.CTkFont(family="Segoe UI", size=11),
+                               text_color=UI_THEME["text_secondary"], wraplength=560)
+    status_lbl.pack(padx=18, pady=(0, 8))
+
+    btn_rel = ctk.CTkButton(act_card, text="📄  Ver Relatório no Navegador", height=38,
+                             corner_radius=11, state="disabled",
+                             font=ctk.CTkFont(family="Segoe UI", size=12),
+                             command=lambda: _ver_relatorio())
+    btn_rel.pack(fill="x", padx=18, pady=(0, 14))
+
+    # ── Secondary buttons ────────────────────────────────────────────────
+    sec_card = _criar_card(tela, corner_radius=20)
+    sec_card.pack(fill="x", padx=18, pady=(0, 10))
+    sec_row = ctk.CTkFrame(sec_card, fg_color="transparent")
+    sec_row.pack(fill="x", padx=18, pady=12)
+    sec_row.grid_columnconfigure((0, 1, 2), weight=1)
+
+    ctk.CTkButton(sec_row, text="📁  Criar Pastas Modelo", height=38, corner_radius=11,
+                  font=ctk.CTkFont(family="Segoe UI", size=11),
+                  fg_color=UI_THEME["surface_alt"], hover_color=UI_THEME["tab_hover"],
+                  text_color=UI_THEME["text_primary"],
+                  command=lambda: _criar_pastas()).grid(row=0, column=0, sticky="ew", padx=(0, 4))
+
+    ctk.CTkButton(sec_row, text="🗂️  Organizar Escaneados", height=38, corner_radius=11,
+                  font=ctk.CTkFont(family="Segoe UI", size=11),
+                  fg_color="#7d5c9e", hover_color="#6a4d88",
+                  command=lambda: _MedicaoOrganizerDialog(tela, folder_var.get())
+                  ).grid(row=0, column=1, sticky="ew", padx=(4, 4))
+
+    ctk.CTkButton(sec_row, text="✂️  Separar PDF", height=38, corner_radius=11,
+                  font=ctk.CTkFont(family="Segoe UI", size=11),
+                  fg_color="#c0392b", hover_color="#a93226",
+                  command=lambda: _MedicaoSplitterDialog(tela, folder_var.get())
+                  ).grid(row=0, column=2, sticky="ew", padx=(4, 0))
+
+    # ── Helpers ──────────────────────────────────────────────────────────
+    def _set_status(msg, color):
+        status_var.set(msg)
+        try:
+            status_lbl.configure(text_color=color)
+        except Exception:
+            pass
+
+    def _audit_done(msg, color, report_path):
+        try:
+            progress.stop()
+        except Exception:
+            pass
+        try:
+            _set_status(msg, color)
+            btn_run.configure(state="normal")
+            btn_rel.configure(state="normal")
+        except Exception as exc:
+            _log(f"[_audit_done] widget error: {exc}")
+        if report_path and os.path.isfile(report_path):
+            _abrir_relatorio_file(report_path)
+
+    def _audit_error(err_msg):
+        try:
+            progress.stop()
+        except Exception:
+            pass
+        try:
+            _set_status(f"Erro: {err_msg}", "#e74c3c")
+            btn_run.configure(state="normal")
+        except Exception:
+            pass
+        messagebox.showerror("Erro na auditoria", err_msg)
+
+    def _iniciar():
+        folder = folder_var.get().strip()
+        if not folder:
+            messagebox.showwarning("Atenção", "Selecione uma pasta antes de iniciar.")
+            return
+        if not os.path.isdir(folder):
+            messagebox.showerror("Erro", f"Pasta não encontrada:\n{folder}")
+            return
+
+        btn_run.configure(state="disabled")
+        btn_rel.configure(state="disabled")
+        progress.start(12)
+        _set_status("Auditando… aguarde.", UI_THEME.get("accent", "#2980b9"))
+
+        # Clear previous log for this run
+        try:
+            os.makedirs(os.path.dirname(_LOG), exist_ok=True)
+            with open(_LOG, "w", encoding="utf-8") as _f:
+                _f.write(f"[audit] folder={folder}\n")
+        except Exception:
+            pass
+
+        def _worker():
+            try:
+                _log("[audit] run_audit starting")
+                result = _medicao_run_audit(folder)
+                _log("[audit] run_audit done, generating report")
+                rpath = _medicao_generate_report(result, folder)
+                _log(f"[audit] report written: {rpath}")
+                _state["report_path"] = rpath
+                n = len(result.get("all_issues", []))
+                ov = result.get("overall_status", "ok")
+                if ov == "ok":
+                    msg = "✅ Auditoria concluída — Nenhuma pendência."
+                    color = "#27ae60"
+                elif ov == "warning":
+                    msg = f"⚠️ Auditoria concluída — {n} ponto(s) de atenção."
+                    color = "#f39c12"
+                else:
+                    msg = f"❌ Auditoria concluída — {n} pendência(s)."
+                    color = "#e74c3c"
+                _log(f"[audit] scheduling _audit_done: {msg}")
+                app.after(0, lambda m=msg, c=color, p=rpath: _audit_done(m, c, p))
+            except Exception as exc:
+                tb = traceback.format_exc()
+                _log(f"[audit] EXCEPTION:\n{tb}")
+                err = str(exc)
+                app.after(0, lambda e=err: _audit_error(e))
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _ver_relatorio():
+        p = _state.get("report_path")
+        if p and os.path.isfile(p):
+            _abrir_relatorio_file(p)
+        else:
+            messagebox.showwarning("Atenção", "Execute a auditoria primeiro.")
+
+    def _criar_pastas():
+        default = folder_var.get().strip()
+        parent_dir = os.path.dirname(default) if default and os.path.isdir(default) \
+            else "C:/Users/ismae/OneDrive/Área de Trabalho/MEDIÇÕES HORIZONTRE X ENERGISA/2026"
+        parent_dir = filedialog.askdirectory(title="Pasta do ano (onde criar a competência)", initialdir=parent_dir)
+        if not parent_dir:
+            return
+        comp_name = simpledialog.askstring("Nova Competência", "Nome da competência (ex: ABRIL):", parent=tela)
+        if not comp_name:
+            return
+        try:
+            comp_path, created = _medicao_scaffold(parent_dir, comp_name.strip().upper())
+            folder_var.set(comp_path)
+            _state["folder"] = comp_path
+            _set_status(f"✅ Pastas criadas: {comp_name.upper()} ({len(created)} subpastas)", "#27ae60")
+            messagebox.showinfo("Pronto", f'Competência "{comp_name.upper()}" criada com {len(created)} subpastas.')
+        except Exception as exc:
+            messagebox.showerror("Erro", str(exc))
+
+    return tela
+
+
 def _criar_tela_configuracoes(parent):
     tela = ctk.CTkFrame(parent, fg_color=UI_THEME["app_bg"])
     card = _criar_card(tela, corner_radius=20)
@@ -5493,10 +5741,13 @@ def construir_tela_principal():
     alteracoes_frame = _criar_tela_alteracoes(screen_host)
     configuracoes_frame = _criar_tela_configuracoes(screen_host)
 
+    medicao_frame = _criar_tela_medicao(screen_host)
+
     app.registrar_tela("dashboard", dashboard_frame)
     app.registrar_tela("relatorios", relatorios_frame)
     app.registrar_tela("alteracoes", alteracoes_frame)
     app.registrar_tela("configuracoes", configuracoes_frame)
+    app.registrar_tela("medicao", medicao_frame)
     app.mostrar_tela("dashboard")
 
 

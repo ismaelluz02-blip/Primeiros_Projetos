@@ -23,3 +23,6 @@ matplotlib>=3.10.0
 #  Ferramenta de build  (não é runtime)
 # ─────────────────────────────────────────────
 cx_Freeze==7.2.7
+
+# Ferramenta de testes
+pytest>=9.0.0
