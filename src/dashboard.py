@@ -97,13 +97,14 @@ def criar_figura_faturamento_periodo(df, plt, theme):
     fig.patch.set_facecolor(theme["chart_bg"])
     ax.set_facecolor(theme["chart_plot_bg"])
 
+    coluna_valor = "valor_inicial"
     resumo = (
-        df.groupby(df["data_competencia"].dt.to_period("M"))["valor_final"]
+        df.groupby(df["data_competencia"].dt.to_period("M"))[coluna_valor]
         .sum()
         .sort_index()
         .reset_index()
     )
-    resumo = resumo[resumo["valor_final"].abs() > 0.0001].copy()
+    resumo = resumo[resumo[coluna_valor].abs() > 0.0001].copy()
 
     if resumo.empty:
         ax.set_title("Faturamento por período", fontsize=11, fontweight="bold", color=theme["text_primary"], pad=8)
@@ -125,7 +126,7 @@ def criar_figura_faturamento_periodo(df, plt, theme):
         lambda dt: f"{meses_abrev[dt.month - 1]}/{dt.strftime('%y')}"
     )
     resumo["idx"] = range(len(resumo))
-    valores = [float(v) for v in resumo["valor_final"].fillna(0).tolist()]
+    valores = [float(v) for v in resumo[coluna_valor].fillna(0).tolist()]
     indices = resumo["idx"].tolist()
     max_valor = max(valores) if valores else 0.0
     limite_superior = max(max_valor * 1.20, 1.0)

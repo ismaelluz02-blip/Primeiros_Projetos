@@ -144,14 +144,13 @@ class TestEscreverExcelFaturamento:
         assert resultado["ok"] is False
         assert resultado["erro"] != ""
 
-    def test_arquivo_tem_duas_abas(self):
-        """O Excel gerado deve ter as abas 'Faturamento AC' e 'Faturamento AC 2'."""
+    def test_arquivo_tem_uma_aba(self):
+        """O Excel gerado deve ter apenas a aba principal."""
         import openpyxl
         arquivo = _arquivo_saida("abas.xlsx")
         escrever_excel_faturamento(_df_base(), arquivo)
         wb = openpyxl.load_workbook(arquivo)
         try:
-            assert "Faturamento AC" in wb.sheetnames
-            assert "Faturamento AC 2" in wb.sheetnames
+            assert wb.sheetnames == ["Faturamento AC"]
         finally:
             wb.close()

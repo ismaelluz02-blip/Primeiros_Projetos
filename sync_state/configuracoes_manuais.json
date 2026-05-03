@@ -1,0 +1,82 @@
+{
+  "metadata": {
+    "schema_version": 1,
+    "exportado_em": "2026-05-03T11:37:16",
+    "formato": "configuracoes_sync_documentos_manuais",
+    "total_documentos": 4
+  },
+  "documentos": [
+    {
+      "tipo": "NF",
+      "numero": 20260129,
+      "numero_original": "129",
+      "data_emissao": "02/04/2026",
+      "valor_inicial": 62066.13,
+      "valor_final": 58962.82,
+      "frete": "DELTA",
+      "status": "OK",
+      "competencia": "marco/2026",
+      "valor_inicial_original": null,
+      "valor_final_original": null,
+      "status_original": null,
+      "cancelado_manual": 0,
+      "competencia_manual": 1,
+      "frete_manual": 1,
+      "frete_revisado_manual": 1
+    },
+    {
+      "tipo": "CTE",
+      "numero": 2524,
+      "numero_original": "2524",
+      "data_emissao": "27/03/2026",
+      "valor_inicial": 4795.63,
+      "valor_final": 4795.63,
+      "frete": "INTERCOMPANY",
+      "status": "OK",
+      "competencia": "marco/2026",
+      "valor_inicial_original": null,
+      "valor_final_original": null,
+      "status_original": null,
+      "cancelado_manual": 0,
+      "competencia_manual": 0,
+      "frete_manual": 1,
+      "frete_revisado_manual": 1
+    },
+    {
+      "tipo": "NF",
+      "numero": 20260128,
+      "numero_original": "128",
+      "data_emissao": "02/04/2026",
+      "valor_inicial": 25315.68,
+      "valor_final": 24049.9,
+      "frete": "SPOT",
+      "status": "OK",
+      "competencia": "abril/2026",
+      "valor_inicial_original": null,
+      "valor_final_original": null,
+      "status_original": null,
+      "cancelado_manual": 0,
+      "competencia_manual": 0,
+      "frete_manual": 1,
+      "frete_revisado_manual": 1
+    },
+    {
+      "tipo": "NF",
+      "numero": 163,
+      "numero_original": "163",
+      "data_emissao": "30/04/2026",
+      "valor_inicial": 75982.43,
+      "valor_final": 72183.31,
+      "frete": "DELTA",
+      "status": "OK",
+      "competencia": "abril/2026",
+      "valor_inicial_original": null,
+      "valor_final_original": null,
+      "status_original": null,
+      "cancelado_manual": 0,
+      "competencia_manual": 0,
+      "frete_manual": 1,
+      "frete_revisado_manual": 1
+    }
+  ]
+}

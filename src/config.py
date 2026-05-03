@@ -61,6 +61,8 @@ FILIAL_PADRAO = "88"
 # ─────────────────────────────────────────────
 
 SYNC_CONFIG_SCHEMA_VERSION = 1
+SYNC_STATE_DIR = os.path.join(APP_DIR, "sync_state")
+SYNC_STATE_PATH = os.path.join(SYNC_STATE_DIR, "configuracoes_manuais.json")
 SYNC_DOCUMENT_FIELDS = [
     "tipo",
     "numero",

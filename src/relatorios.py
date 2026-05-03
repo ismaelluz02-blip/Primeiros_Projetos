@@ -179,7 +179,7 @@ def _montar_df_relatorio_excel(df_in):
 def escrever_excel_faturamento(df, nome_arquivo):
     """
     Recebe o df já filtrado (com data_competencia/competencia_excel) e escreve
-    o arquivo xlsx de faturamento com duas abas formatadas.
+    o arquivo xlsx de faturamento com a aba principal formatada.
     Retorna {"ok": True/False, "total_documentos": int, "arquivo": str, "erro": str}.
     """
     import pandas as pd
@@ -246,9 +246,7 @@ def escrever_excel_faturamento(df, nome_arquivo):
 
         with pd.ExcelWriter(nome_arquivo, engine="openpyxl") as writer:
             df_relatorio.to_excel(writer, index=False, startcol=1, sheet_name="Faturamento AC")
-            df_relatorio.to_excel(writer, index=False, startcol=1, sheet_name="Faturamento AC 2")
             _formatar_aba(writer.sheets["Faturamento AC"], df_relatorio)
-            _formatar_aba(writer.sheets["Faturamento AC 2"], df_relatorio)
 
         return {"ok": True, "total_documentos": int(len(df_relatorio)), "arquivo": nome_arquivo, "erro": ""}
 

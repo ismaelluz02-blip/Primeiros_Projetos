@@ -7,6 +7,7 @@ permanecem em sistema_faturamento.py.
 """
 
 import json
+import os
 import sqlite3
 import socket
 import getpass
@@ -135,27 +136,51 @@ def _listar_documentos_alterados_para_sync():
 #  Exportação
 # ─────────────────────────────────────────────
 
-def exportar_configuracoes_json(caminho_arquivo):
+def _montar_payload_configuracoes(include_origin=True):
     documentos = _listar_documentos_alterados_para_sync()
-    payload = {
+    metadata = {
+        "schema_version": config.SYNC_CONFIG_SCHEMA_VERSION,
+        "exportado_em": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
+        "formato": "configuracoes_sync_documentos_manuais",
+        "total_documentos": len(documentos),
+    }
+    if include_origin:
+        metadata["origem"] = {
+            "host": socket.gethostname(),
+            "usuario": getpass.getuser(),
+            "app_data_dir": config.APP_DATA_DIR,
+        }
+    return {
         "metadata": {
-            "schema_version": config.SYNC_CONFIG_SCHEMA_VERSION,
-            "exportado_em": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
-            "formato": "configuracoes_sync_documentos_manuais",
-            "origem": {
-                "host": socket.gethostname(),
-                "usuario": getpass.getuser(),
-                "app_data_dir": config.APP_DATA_DIR,
-            },
-            "total_documentos": len(documentos),
+            **metadata,
         },
         "documentos": documentos,
     }
 
+
+def exportar_configuracoes_json(caminho_arquivo):
+    payload = _montar_payload_configuracoes(include_origin=True)
+
     with open(caminho_arquivo, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
 
-    return len(documentos)
+    return int(payload["metadata"]["total_documentos"])
+
+
+def exportar_configuracoes_repo(caminho_arquivo=None):
+    caminho = caminho_arquivo or config.SYNC_STATE_PATH
+    os.makedirs(os.path.dirname(caminho), exist_ok=True)
+    payload = _montar_payload_configuracoes(include_origin=False)
+    with open(caminho, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+    return int(payload["metadata"]["total_documentos"])
+
+
+def importar_configuracoes_repo_se_existir(caminho_arquivo=None):
+    caminho = caminho_arquivo or config.SYNC_STATE_PATH
+    if not os.path.exists(caminho):
+        return None
+    return importar_configuracoes_json(caminho)
 
 
 def _extrair_documentos_payload_sync(payload):

@@ -108,7 +108,9 @@ from src.importacao import (
 )
 from src.sync import (
     exportar_configuracoes_json,
+    exportar_configuracoes_repo,
     importar_configuracoes_json,
+    importar_configuracoes_repo_se_existir,
     _listar_documentos_alterados_para_sync,
 )
 from src.cache import doc_cache
@@ -784,6 +786,42 @@ def selecionar_pasta_saida_relatorios():
     messagebox.showinfo("Pasta de saída", f"Relatórios serão salvos em:\n{pasta_relatorios_saida}")
 
 
+def _resolver_pasta_arquivo_relatorio():
+    pasta_saida = obter_pasta_saida_relatorios()
+    candidatos = []
+    if isinstance(dados_importados, dict):
+        candidatos.append(dados_importados.get("ultimo_export_periodo", ""))
+        candidatos.append(dados_importados.get("ultimo_relatorio_filtrado", ""))
+
+    for candidato in candidatos:
+        caminho = str(candidato or "").strip()
+        if not caminho:
+            continue
+        if os.path.isfile(caminho):
+            pasta = os.path.dirname(os.path.abspath(caminho))
+            if os.path.normcase(os.path.abspath(pasta)) == os.path.normcase(os.path.abspath(pasta_saida)):
+                return pasta
+        if os.path.isdir(caminho):
+            pasta = os.path.abspath(caminho)
+            if os.path.normcase(pasta) == os.path.normcase(os.path.abspath(pasta_saida)):
+                return pasta
+
+    return pasta_saida
+
+
+def abrir_pasta_arquivo_relatorio():
+    pasta = _resolver_pasta_arquivo_relatorio()
+    if not pasta:
+        messagebox.showwarning("Abrir pasta", "Nenhuma pasta de relatório foi encontrada.")
+        return
+
+    try:
+        os.makedirs(pasta, exist_ok=True)
+        os.startfile(pasta)
+    except Exception as exc:
+        messagebox.showerror("Abrir pasta", f"Não foi possível abrir a pasta:\n{pasta}\n\n{exc}")
+
+
 def salvar_ultimo_relatorio(caminho):
     if not caminho:
         return
@@ -1457,6 +1495,23 @@ def importar_configuracoes_ui():
         messagebox.showerror("Configurações", f"Falha ao importar configurações.\n\n{exc}")
 
 
+def importar_configuracoes_repo_inicial():
+    try:
+        resumo = importar_configuracoes_repo_se_existir()
+        if resumo:
+            _logger.info("Configurações manuais do repositório importadas: %s", resumo)
+    except Exception as exc:
+        _logger.warning("Falha ao importar configurações manuais do repositório: %s", exc, exc_info=True)
+
+
+def exportar_configuracoes_repo_silencioso():
+    try:
+        total = exportar_configuracoes_repo()
+        _logger.info("Configurações manuais do repositório exportadas: %s documento(s)", total)
+    except Exception as exc:
+        _logger.warning("Falha ao exportar configurações manuais do repositório: %s", exc, exc_info=True)
+
+
 
 # ─── src/documentos.py ──────────────────────────────────────────────────────
 # _buscar_documento_existente_sync, salvar_documento, alterar_competencia_documento,
@@ -1716,7 +1771,7 @@ def gerar_excel(data_inicial=None, data_final=None, exibir_mensagem=True):
             "Excel",
             f"Relatório gerado com {resultado['total_documentos']} documento(s) no período"
             f" {data_inicial.strftime('%d/%m/%Y')} a {data_final.strftime('%d/%m/%Y')}\n\n"
-            f"Abas: Faturamento AC e Faturamento AC 2\nArquivo: {nome}",
+            f"Aba: Faturamento AC\nArquivo: {nome}",
         )
     return {
         "ok": True,
@@ -1805,6 +1860,7 @@ def _encerrar_aplicacao():
 app.protocol("WM_DELETE_WINDOW", _encerrar_aplicacao)
 
 iniciar_banco()
+importar_configuracoes_repo_inicial()
 carregar_pasta_saida_relatorios()
 carregar_ultimo_relatorio()
 inicializar_filtros_dashboard()
@@ -2679,7 +2735,7 @@ def abrir_grafico_faturamento():
 
     df = pd.read_sql_query(
         """
-        SELECT data_emissao, valor_final
+        SELECT data_emissao, valor_inicial
         FROM documentos
         WHERE status NOT LIKE '%CANCELADO%'
         """,
@@ -2694,12 +2750,12 @@ def abrir_grafico_faturamento():
 
     df["data_emissao"] = pd.to_datetime(df["data_emissao"], dayfirst=True, errors="coerce")
     df = df.dropna(subset=["data_emissao"])
-    df["valor_final"] = pd.to_numeric(df["valor_final"], errors="coerce").fillna(0)
+    df["valor_inicial"] = pd.to_numeric(df["valor_inicial"], errors="coerce").fillna(0)
 
     df["mes"] = df["data_emissao"].dt.to_period("M")
 
-    resumo_base = df.groupby("mes")["valor_final"].sum().reset_index().sort_values("mes").reset_index(drop=True)
-    resumo_base = resumo_base[resumo_base["valor_final"].abs() > 0.0001].copy().reset_index(drop=True)
+    resumo_base = df.groupby("mes")["valor_inicial"].sum().reset_index().sort_values("mes").reset_index(drop=True)
+    resumo_base = resumo_base[resumo_base["valor_inicial"].abs() > 0.0001].copy().reset_index(drop=True)
     resumo_base["mes_dt"] = resumo_base["mes"].dt.to_timestamp()
     meses_abrev = ["Jan", "Fev", "Mar", "Abr", "Mai", "Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez"]
 
@@ -2963,7 +3019,7 @@ def abrir_grafico_faturamento():
         ax.clear()
         ax.set_facecolor(UI_THEME["chart_plot_bg"])
 
-        valores_reais = [float(v) for v in resumo["valor_final"].tolist()]
+        valores_reais = [float(v) for v in resumo["valor_inicial"].tolist()]
         indices = resumo["idx"].tolist()
         labels = resumo["mes_label"].tolist()
         qtd = len(valores_reais)
@@ -3318,6 +3374,7 @@ ACTION_LAYOUT_ATUAL = {}
 # Registrar callbacks para src.documentos notificar mudanças na UI
 _register_doc_on_change(_atualizar_cache_documentos_pos_alteracao)
 _register_doc_on_change(atualizar_dashboard)
+_register_doc_on_change(exportar_configuracoes_repo_silencioso)
 
 
 def _safe_config(widget, **kwargs):
@@ -3571,22 +3628,23 @@ def alternar_tema_interface():
 
 def _catalogo_acoes_interface():
     return {
-        "selecionar_relatorio": {"titulo": "Selecionar relatório", "comando": selecionar_relatorio},
-        "abrir_relatorio": {"titulo": "Abrir relatório", "comando": abrir_relatorio},
-        "exportar_relatorio_periodo": {"titulo": "Exportar relatório do período", "comando": exportar_relatorio_filtrado},
-        "pasta_saida": {"titulo": "Pasta de saída", "comando": selecionar_pasta_saida_relatorios},
-        "relatorio_cancelados": {"titulo": "Relatórios cancelados", "comando": abrir_relatorio_cancelados},
-        "grafico_faturamento": {"titulo": "Gráfico de faturamento", "comando": abrir_grafico_faturamento},
-        "buscar_documento": {"titulo": "Buscar documento", "comando": abrir_busca_documentos},
-        "alterar_competencia": {"titulo": "Alterar competência", "comando": abrir_dialogo_alterar_competencia},
-        "substituir_documento": {"titulo": "Substituir documento", "comando": abrir_dialogo_substituir_documento},
-        "cancelar_documento": {"titulo": "Cancelar documento", "comando": abrir_dialogo_cancelar_documento},
-        "declarar_intercompany": {"titulo": "Declarar intercompany", "comando": abrir_dialogo_declarar_intercompany},
-        "declarar_delta": {"titulo": "Declarar delta", "comando": abrir_dialogo_declarar_delta},
-        "declarar_spot": {"titulo": "Declarar spot", "comando": abrir_dialogo_declarar_spot},
-        "alternar_tema": {"titulo": "Alternar tema", "comando": alternar_tema_interface},
-        "exportar_configuracoes": {"titulo": "Exportar configurações", "comando": exportar_configuracoes_ui},
-        "importar_configuracoes": {"titulo": "Importar configurações", "comando": importar_configuracoes_ui},
+        "selecionar_relatorio": {"titulo": "📁 Selecionar relatório", "comando": selecionar_relatorio},
+        "abrir_relatorio": {"titulo": "📄 Abrir relatório", "comando": abrir_relatorio},
+        "exportar_relatorio_periodo": {"titulo": "📊 Exportar relatório do período", "comando": exportar_relatorio_filtrado},
+        "abrir_pasta_relatorio": {"titulo": "📂 Abrir pasta do arquivo", "comando": abrir_pasta_arquivo_relatorio},
+        "pasta_saida": {"titulo": "📂 Pasta de saída", "comando": selecionar_pasta_saida_relatorios},
+        "relatorio_cancelados": {"titulo": "⛔ Relatórios cancelados", "comando": abrir_relatorio_cancelados},
+        "grafico_faturamento": {"titulo": "📈 Gráfico de faturamento", "comando": abrir_grafico_faturamento},
+        "buscar_documento": {"titulo": "🔎 Buscar documento", "comando": abrir_busca_documentos},
+        "alterar_competencia": {"titulo": "📅 Alterar competência", "comando": abrir_dialogo_alterar_competencia},
+        "substituir_documento": {"titulo": "🔁 Substituir documento", "comando": abrir_dialogo_substituir_documento},
+        "cancelar_documento": {"titulo": "⛔ Cancelar documento", "comando": abrir_dialogo_cancelar_documento},
+        "declarar_intercompany": {"titulo": "🏢 Declarar intercompany", "comando": abrir_dialogo_declarar_intercompany},
+        "declarar_delta": {"titulo": "🔺 Declarar delta", "comando": abrir_dialogo_declarar_delta},
+        "declarar_spot": {"titulo": "⚡ Declarar spot", "comando": abrir_dialogo_declarar_spot},
+        "alternar_tema": {"titulo": "🌗 Alternar tema", "comando": alternar_tema_interface},
+        "exportar_configuracoes": {"titulo": "📤 Exportar configurações", "comando": exportar_configuracoes_ui},
+        "importar_configuracoes": {"titulo": "📥 Importar configurações", "comando": importar_configuracoes_ui},
     }
 
 
@@ -3596,6 +3654,7 @@ def _layout_botoes_padrao():
             "selecionar_relatorio",
             "abrir_relatorio",
             "exportar_relatorio_periodo",
+            "abrir_pasta_relatorio",
             "pasta_saida",
             "relatorio_cancelados",
             "grafico_faturamento",
@@ -3672,7 +3731,12 @@ def _normalizar_layout_botoes(layout_raw):
             usados.add(acao_id)
 
     # Mantém fluxo principal sempre disponível na aba Relatórios.
-    obrigatorios_relatorios = ["selecionar_relatorio", "abrir_relatorio"]
+    obrigatorios_relatorios = [
+        "selecionar_relatorio",
+        "abrir_relatorio",
+        "exportar_relatorio_periodo",
+        "abrir_pasta_relatorio",
+    ]
     for acao_id in obrigatorios_relatorios:
         for aba in ACTION_HOST_SCREENS:
             if acao_id in layout.get(aba, []):
@@ -4997,11 +5061,11 @@ def _criar_navegacao_telas(parent):
 
     telas = [(sid, SCREEN_NAV_CATALOG.get(sid, sid.title())) for sid in SCREEN_ORDER_ATUAL]
     nav_icons = {
-        "dashboard": "⌂",
-        "relatorios": "▣",
-        "alteracoes": "✣",
+        "dashboard": "🏠",
+        "relatorios": "📋",
+        "alteracoes": "🛠",
         "configuracoes": "⚙",
-        "medicao": "⊗",
+        "medicao": "🔍",
     }
 
     for id_tela, titulo in telas:
@@ -5037,7 +5101,7 @@ def _criar_navegacao_telas(parent):
 
     btn_reordenar = ctk.CTkButton(
         nav_card,
-        text="✣   Organizar botões",
+        text="🧩   Organizar botões",
         height=42,
         corner_radius=12,
         border_width=1,
@@ -5114,7 +5178,7 @@ def _obter_acoes_relatorios_ordenadas():
             for acao_id in _layout_botoes_padrao().get("relatorios", [])
             if acao_id in catalogo and acao_id in permitidas
         ]
-    for acao_id in ("selecionar_relatorio", "abrir_relatorio", "exportar_relatorio_periodo"):
+    for acao_id in ("selecionar_relatorio", "abrir_relatorio", "exportar_relatorio_periodo", "abrir_pasta_relatorio"):
         if acao_id in catalogo and acao_id not in ids:
             ids.append(acao_id)
     return ids
@@ -5228,10 +5292,10 @@ def _criar_bloco_relatorios_principal(parent, acoes_relatorios):
 
     grade = ctk.CTkFrame(card, fg_color="transparent")
     grade.pack(fill="x", padx=16, pady=(0, 16))
-    grade.grid_columnconfigure((0, 1, 2), weight=1)
+    grade.grid_columnconfigure((0, 1, 2, 3), weight=1)
 
     catalogo = _catalogo_acoes_interface()
-    principal_ordem = ["selecionar_relatorio", "abrir_relatorio", "exportar_relatorio_periodo"]
+    principal_ordem = ["selecionar_relatorio", "abrir_relatorio", "exportar_relatorio_periodo", "abrir_pasta_relatorio"]
     principal_ids = [aid for aid in principal_ordem if aid in acoes_relatorios]
     for idx, acao_id in enumerate(principal_ids):
         item = catalogo.get(acao_id)
@@ -5393,16 +5457,256 @@ def _criar_tela_faturamento(parent):
     return tela
 
 
+def _consultar_painel_alteracoes(limite=2):
+    dados = {
+        "contadores": {
+            "DELTA": {"qtd": 0, "total": 0.0},
+            "SPOT": {"qtd": 0, "total": 0.0},
+            "INTERCOMPANY": {"qtd": 0, "total": 0.0},
+            "CANCELADOS": {"qtd": 0, "total": 0.0},
+            "MANUAIS": {"qtd": 0, "total": 0.0},
+        },
+        "listas": {"DELTA": [], "SPOT": [], "INTERCOMPANY": [], "CANCELADOS": []},
+    }
+    conn = None
+    try:
+        conn = obter_conexao_banco()
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT UPPER(COALESCE(frete, '')) AS modalidade,
+                   COUNT(*) AS qtd,
+                   COALESCE(SUM(COALESCE(valor_final, 0)), 0) AS total
+            FROM documentos
+            WHERE UPPER(COALESCE(frete, '')) IN ('DELTA', 'SPOT', 'INTERCOMPANY')
+            GROUP BY UPPER(COALESCE(frete, ''))
+            """
+        )
+        for row in cursor.fetchall():
+            modalidade = str(row["modalidade"] or "").upper()
+            if modalidade in dados["contadores"]:
+                dados["contadores"][modalidade] = {
+                    "qtd": int(row["qtd"] or 0),
+                    "total": float(row["total"] or 0),
+                }
+
+        cursor.execute(
+            """
+            SELECT COUNT(*) AS qtd, COALESCE(SUM(COALESCE(valor_final_original, valor_final, 0)), 0) AS total
+            FROM documentos
+            WHERE COALESCE(cancelado_manual, 0)=1 OR UPPER(COALESCE(status, '')) LIKE '%CANCEL%'
+            """
+        )
+        row = cursor.fetchone()
+        if row:
+            dados["contadores"]["CANCELADOS"] = {"qtd": int(row["qtd"] or 0), "total": float(row["total"] or 0)}
+
+        cursor.execute(
+            """
+            SELECT COUNT(*) AS qtd
+            FROM documentos
+            WHERE COALESCE(competencia_manual, 0)=1
+               OR COALESCE(frete_manual, 0)=1
+               OR COALESCE(frete_revisado_manual, 0)=1
+               OR COALESCE(cancelado_manual, 0)=1
+            """
+        )
+        row = cursor.fetchone()
+        if row:
+            dados["contadores"]["MANUAIS"] = {"qtd": int(row["qtd"] or 0), "total": 0.0}
+
+        def _buscar_lista(where_sql, params=()):
+            cursor.execute(
+                f"""
+                SELECT tipo, numero, numero_original, competencia, data_emissao,
+                       valor_final, valor_final_original, frete, status
+                FROM documentos
+                WHERE {where_sql}
+                ORDER BY COALESCE(data_emissao, '') DESC, id DESC
+                LIMIT ?
+                """,
+                (*params, int(limite)),
+            )
+            return [dict(row) for row in cursor.fetchall()]
+
+        for modalidade in ("DELTA", "SPOT", "INTERCOMPANY"):
+            dados["listas"][modalidade] = _buscar_lista("UPPER(COALESCE(frete, ''))=?", (modalidade,))
+        dados["listas"]["CANCELADOS"] = _buscar_lista(
+            "COALESCE(cancelado_manual, 0)=1 OR UPPER(COALESCE(status, '')) LIKE '%CANCEL%'"
+        )
+    except Exception as exc:
+        _logger.warning("Falha ao consultar painel de alteracoes: %s", exc, exc_info=True)
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+    return dados
+
+
+def _formatar_doc_curto(row):
+    tipo = str(row.get("tipo") or "-").upper()
+    numero = row.get("numero_original") or row.get("numero") or "-"
+    return f"{tipo} {numero}"
+
+
+def _formatar_competencia_curta(valor):
+    texto = str(valor or "").strip()
+    return texto if texto else "-"
+
+
+def _formatar_status_curto(valor):
+    texto = str(valor or "").strip()
+    return texto if texto else "-"
+
+
 def _criar_tela_alteracoes(parent):
     tela = ctk.CTkFrame(parent, fg_color=UI_THEME["app_bg"])
+    dados = _consultar_painel_alteracoes()
+
+    header = ctk.CTkFrame(tela, fg_color="transparent")
+    header.pack(fill="x", padx=18, pady=(0, 10))
+    header.grid_columnconfigure(0, weight=1)
+    ctk.CTkLabel(
+        header,
+        text="Alterações manuais",
+        font=ctk.CTkFont(family="Segoe UI", size=24, weight="bold"),
+        text_color=UI_THEME["text_primary"],
+    ).grid(row=0, column=0, sticky="w")
+    ctk.CTkLabel(
+        header,
+        text="Resumo das intervenções no faturamento, com foco em Delta, Spot e revisões manuais.",
+        font=ctk.CTkFont(family="Segoe UI", size=12),
+        text_color=UI_THEME["text_secondary"],
+    ).grid(row=1, column=0, sticky="w", pady=(4, 0))
+    _criar_botao_acao(
+        header,
+        "🔄 Atualizar painel",
+        lambda: _recriar_tela_alteracoes(),
+        variant="secondary",
+        height=36,
+    ).grid(row=0, column=1, rowspan=2, sticky="e", padx=(14, 0))
+
+    resumo_grid = ctk.CTkFrame(tela, fg_color="transparent")
+    resumo_grid.pack(fill="x", padx=18, pady=(0, 12))
+    resumo_grid.grid_columnconfigure((0, 1, 2, 3), weight=1)
+
+    def _card_resumo(coluna, titulo, chave, icone, cor, detalhe):
+        info = dados["contadores"].get(chave, {"qtd": 0, "total": 0.0})
+        card_resumo = _criar_card(resumo_grid, corner_radius=16)
+        card_resumo.grid(row=0, column=coluna, sticky="nsew", padx=(0 if coluna == 0 else 6, 0 if coluna == 3 else 6))
+        topo = ctk.CTkFrame(card_resumo, fg_color="transparent")
+        topo.pack(fill="x", padx=14, pady=(14, 6))
+        _criar_badge_icone(topo, icone, cor=cor, tamanho=38).pack(side="left")
+        ctk.CTkLabel(
+            topo,
+            text=titulo,
+            font=ctk.CTkFont(family="Segoe UI", size=12, weight="bold"),
+            text_color=UI_THEME["text_secondary"],
+        ).pack(side="left", padx=(10, 0))
+        ctk.CTkLabel(
+            card_resumo,
+            text=str(info["qtd"]),
+            font=ctk.CTkFont(family="Segoe UI", size=28, weight="bold"),
+            text_color=UI_THEME["text_primary"],
+        ).pack(anchor="w", padx=14)
+        ctk.CTkLabel(
+            card_resumo,
+            text=detalhe(info),
+            font=ctk.CTkFont(family="Segoe UI", size=11),
+            text_color=UI_THEME["text_secondary"],
+        ).pack(anchor="w", padx=14, pady=(0, 14))
+
+    _card_resumo(0, "Notas Delta", "DELTA", "🔺", "#1AAE8F", lambda i: f"Total: {formatar_moeda_brl(i['total'])}")
+    _card_resumo(1, "Notas Spot", "SPOT", "⚡", "#2386D1", lambda i: f"Total: {formatar_moeda_brl(i['total'])}")
+    _card_resumo(2, "Intercompany", "INTERCOMPANY", "🏢", "#8C5DE8", lambda i: f"Total: {formatar_moeda_brl(i['total'])}")
+    _card_resumo(3, "Revisões manuais", "MANUAIS", "🛠", "#E0A422", lambda _i: "Competência, frete ou cancelamento")
+
+    def _criar_tabela(parent_grid, linha_grid, coluna, titulo, subtitulo, linhas, cor):
+        card_tabela = _criar_card(parent_grid, corner_radius=16)
+        card_tabela.grid(row=linha_grid, column=coluna, sticky="nsew", padx=(0 if coluna == 0 else 6, 0 if coluna == 1 else 6), pady=(0, 12))
+        cab = ctk.CTkFrame(card_tabela, fg_color="transparent")
+        cab.pack(fill="x", padx=14, pady=(14, 8))
+        _criar_badge_icone(cab, "▦", cor=cor, tamanho=34).pack(side="left")
+        textos = ctk.CTkFrame(cab, fg_color="transparent")
+        textos.pack(side="left", padx=(10, 0), fill="x", expand=True)
+        ctk.CTkLabel(
+            textos,
+            text=titulo,
+            font=ctk.CTkFont(family="Segoe UI", size=15, weight="bold"),
+            text_color=UI_THEME["text_primary"],
+        ).pack(anchor="w")
+        ctk.CTkLabel(
+            textos,
+            text=subtitulo,
+            font=ctk.CTkFont(family="Segoe UI", size=11),
+            text_color=UI_THEME["text_secondary"],
+        ).pack(anchor="w")
+
+        grid = ctk.CTkFrame(card_tabela, fg_color="transparent")
+        grid.pack(fill="x", padx=14, pady=(0, 14))
+        for idx, peso in enumerate((2, 1, 1, 1)):
+            grid.grid_columnconfigure(idx, weight=peso)
+        headers = ("Documento", "Competência", "Valor", "Status")
+        for idx, texto in enumerate(headers):
+            ctk.CTkLabel(
+                grid,
+                text=texto,
+                font=ctk.CTkFont(family="Segoe UI", size=10, weight="bold"),
+                text_color=UI_THEME["text_secondary"],
+                anchor="w",
+            ).grid(row=0, column=idx, sticky="ew", padx=(0 if idx == 0 else 8, 0), pady=(0, 6))
+
+        if not linhas:
+            ctk.CTkLabel(
+                grid,
+                text="Nenhuma nota encontrada nessa modalidade.",
+                font=ctk.CTkFont(family="Segoe UI", size=12),
+                text_color=UI_THEME["text_secondary"],
+                anchor="w",
+            ).grid(row=1, column=0, columnspan=4, sticky="ew", pady=(8, 2))
+            return
+
+        for row_idx, row in enumerate(linhas[:2], start=1):
+            valores = (
+                _formatar_doc_curto(row),
+                _formatar_competencia_curta(row.get("competencia")),
+                formatar_moeda_brl(row.get("valor_final") or 0),
+                _formatar_status_curto(row.get("status")),
+            )
+            for col_idx, valor in enumerate(valores):
+                ctk.CTkLabel(
+                    grid,
+                    text=valor,
+                    font=ctk.CTkFont(family="Segoe UI", size=11),
+                    text_color=UI_THEME["text_primary"] if col_idx == 0 else UI_THEME["text_secondary"],
+                    anchor="w",
+                ).grid(row=row_idx, column=col_idx, sticky="ew", padx=(0 if col_idx == 0 else 8, 0), pady=3)
+
+    tabelas_grid = ctk.CTkFrame(tela, fg_color="transparent")
+    tabelas_grid.pack(fill="x", padx=18, pady=(0, 0))
+    tabelas_grid.grid_columnconfigure((0, 1), weight=1)
+    _criar_tabela(tabelas_grid, 0, 0, "Notas declaradas Delta", "Últimos documentos com frete revisado para Delta.", dados["listas"].get("DELTA", []), "#1AAE8F")
+    _criar_tabela(tabelas_grid, 0, 1, "Notas declaradas Spot", "Últimos documentos com frete revisado para Spot.", dados["listas"].get("SPOT", []), "#2386D1")
+    _criar_tabela(tabelas_grid, 1, 0, "Intercompany recentes", "Itens separados para acompanhamento interno.", dados["listas"].get("INTERCOMPANY", []), "#8C5DE8")
+    _criar_tabela(tabelas_grid, 1, 1, "Cancelamentos recentes", "Documentos marcados como cancelados ou zerados manualmente.", dados["listas"].get("CANCELADOS", []), "#D85B6A")
+
     card = _criar_card(tela, corner_radius=20)
     card.pack(fill="x", padx=18, pady=(0, 16))
     ctk.CTkLabel(
         card,
-        text="Alteracoes manuais",
+        text="Ações rápidas",
         font=ctk.CTkFont(family="Segoe UI", size=18, weight="bold"),
         text_color=UI_THEME["text_primary"],
-    ).pack(anchor="w", padx=18, pady=(14, 10))
+    ).pack(anchor="w", padx=18, pady=(14, 2))
+    ctk.CTkLabel(
+        card,
+        text="Corrija competência, substitua, cancele ou declare modalidades sem precisar sair da tela.",
+        font=ctk.CTkFont(family="Segoe UI", size=11),
+        text_color=UI_THEME["text_secondary"],
+    ).pack(anchor="w", padx=18, pady=(0, 10))
 
     grade = ctk.CTkFrame(card, fg_color="transparent")
     grade.pack(fill="x", padx=16, pady=(0, 16))
@@ -5416,6 +5720,31 @@ def _criar_tela_alteracoes(parent):
             text_color=UI_THEME["text_secondary"],
         ).pack(anchor="w", padx=18, pady=(0, 16))
     return tela
+
+
+def _recriar_tela_alteracoes():
+    try:
+        host = getattr(app, "screen_host", None)
+        if host is None or not host.winfo_exists():
+            return
+
+        tela_antiga = app.screens.get("alteracoes")
+        if tela_antiga is not None and tela_antiga.winfo_exists():
+            tela_antiga.destroy()
+
+        nova_tela = _criar_tela_alteracoes(host)
+        app.registrar_tela("alteracoes", nova_tela)
+        if getattr(app, "current_screen", "") == "alteracoes":
+            app.mostrar_tela("alteracoes")
+    except Exception as exc:
+        _logger.warning("Falha ao atualizar painel de alteracoes: %s", exc, exc_info=True)
+
+
+def _agendar_atualizacao_painel_alteracoes():
+    try:
+        app.after(0, _recriar_tela_alteracoes)
+    except Exception:
+        _recriar_tela_alteracoes()
 
 
 def _criar_tela_medicao(parent):
@@ -5940,6 +6269,7 @@ def construir_tela_principal():
 
 
 construir_tela_principal()
+_register_doc_on_change(_agendar_atualizacao_painel_alteracoes)
 aplicar_tema_interface()
 
 # Ajusta a janela ao novo layout dashboard.
