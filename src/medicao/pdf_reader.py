@@ -64,7 +64,7 @@ def identify_doc_types(filepath):
         tags.add('VT_DECLARACAO')
 
     # DEMISSÃO
-    if any(k in fn for k in ['termo de rescisao', 'termo de recisao', 'trct', 'rescisao', 'recissao']) and 'quitacao' not in fn:
+    if any(k in fn for k in ['termo de rescisao', 'termo de recisao', 'termo de recissao', 'trct', 'rescisao', 'recisao', 'recissao']) and 'quitacao' not in fn:
         tags.add('TRCT')
     if 'quitacao' in fn:
         tags.add('QUITACAO')
@@ -76,9 +76,11 @@ def identify_doc_types(filepath):
         tags.add('SEGURO_DESEMPREGO')
     if any(k in fn for k in ['homologacao', 'comunicado de homologacao', 'comunicado_homologacao']):
         tags.add('HOMOLOGACAO')
-    if any(k in fn for k in ['comprovante de pagamento das verbas', 'verbas recisorias', 'pagamento das verbas',
-                              'comprovante de pagamento de recis', 'comprovante rescisao', 'comprovante recisao',
-                              'pagamento de recisao', 'pagamento de rescisao']):
+    if any(k in fn for k in ['comprovante de pagamento das verbas', 'verbas recisorias', 'verbas rescisorias', 'pagamento das verbas',
+                              'comprovante de pagamento de recis', 'comprovante de recisao', 'comprovante de recissao',
+                              'comprovante de rescisao', 'comprovante rescisao', 'comprovante recisao',
+                              'comprovante recissao', 'pagamento de recisao', 'pagamento de recissao',
+                              'pagamento de rescisao']):
         tags.add('COMPROVANTE_RESCISAO')
     if any(k in fn for k in ['gfd guia', 'gfd_guia']):
         tags.add('GRRF_MULTA')

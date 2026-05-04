@@ -51,6 +51,155 @@ def _evidence(evidence_map, *tags):
     return ''
 
 
+def _tags_from_pending_text(text):
+    n = normalize(text)
+    checks = [
+        ('CONTRATO', ['contrato de trabalho', 'contrato']),
+        ('FICHA_REGISTRO', ['ficha de registro', 'registro de empregado']),
+        ('CTPS', ['ctps']),
+        ('ESOCIAL', ['esocial', 'e social', 'baixa digital']),
+        ('ASO_ADMISSIONAL', ['aso admissional']),
+        ('ASO_DEMISSIONAL', ['aso demissional']),
+        ('ASO_MUDANCA', ['aso mudanca', 'mudanca de risco']),
+        ('ASO', ['aso']),
+        ('EPI', ['epi']),
+        ('VT_DECLARACAO', ['declaracao de opcao vt', 'vale transporte']),
+        ('TRCT', ['termo de rescisao', 'trct']),
+        ('COMPROVANTE_RESCISAO', ['comprovante de pagamento da rescisao']),
+        ('AVISO_PREVIO', ['aviso previo', 'pedido de demissao']),
+        ('FGTS_GRRF', ['fgts grrf', 'grrf', 'multa 40']),
+        ('SEGURO_DESEMPREGO', ['seguro desemprego']),
+        ('RECIBO_FERIAS', ['recibo de ferias']),
+        ('AVISO_FERIAS', ['aviso de ferias']),
+        ('COMPROVANTE_FERIAS', ['comprovante de pagamento de ferias']),
+        ('FOPAG', ['folha de pagamento analitica', 'fopag']),
+        ('COMPROVANTE_SALARIO', ['comprovante de pagamento de salario', 'saldo salario', 'saldo/salario']),
+        ('GUIA_FGTS', ['guia fgts']),
+        ('COMPROVANTE_FGTS', ['comprovante de pagamento fgts']),
+        ('DETALHAMENTO_FGTS', ['detalhamento da guia fgts']),
+        ('CRF', ['certificado de regularidade fgts', 'crf']),
+        ('DCTFWEB', ['dctfweb']),
+        ('DARF_INSS', ['darf inss']),
+    ]
+    return [tag for tag, terms in checks if any(term in n for term in terms)]
+
+
+def _best_global_evidence(evidence_map, tags, person=''):
+    candidates = []
+    person_norm = normalize(person)
+    for tag in tags:
+        for item in evidence_map.get(tag, []) or []:
+            path = item.get('filePath') or item.get('fileName') or ''
+            if person_norm and not employee_matches_folder(person, path):
+                continue
+            confidence_score = {'alta': 3, 'media': 2, 'baixa': 1}.get(item.get('confidence'), 0)
+            candidates.append((confidence_score, item, tag))
+    if not candidates:
+        return None, None
+    candidates.sort(key=lambda row: row[0], reverse=True)
+    return candidates[0][1], candidates[0][2]
+
+
+def _filename_evidence_in_folder(folder_path):
+    evidence = {}
+    if not os.path.isdir(folder_path):
+        return evidence
+    for root, _dirs, files in os.walk(folder_path):
+        for filename in files:
+            item_path = os.path.join(root, filename)
+            if not os.path.isfile(item_path) or not filename.lower().endswith('.pdf'):
+                continue
+            for tag in identify_doc_types(item_path):
+                evidence.setdefault(tag, []).append({
+                    'documentType': tag,
+                    'documentName': tag,
+                    'filePath': item_path,
+                    'fileName': filename,
+                    'pages': [],
+                    'confidence': 'alta',
+                    'method': 'nome do arquivo',
+                    'matchedKeywords': [],
+                    'source': 'nome do arquivo',
+                })
+    return evidence
+
+
+def _merge_evidence_maps(*maps):
+    merged = {}
+    seen = set()
+    for evidence_map in maps:
+        for tag, items in (evidence_map or {}).items():
+            for item in items or []:
+                key = (tag, item.get('filePath') or item.get('fileName'), tuple(item.get('pages') or []), item.get('method'))
+                if key in seen:
+                    continue
+                seen.add(key)
+                merged.setdefault(tag, []).append(item)
+    return merged
+
+
+def _resolve_pendencias_por_busca_profunda(sections, folder_path):
+    evidence = _merge_evidence_maps(
+        _filename_evidence_in_folder(folder_path),
+        get_pdf_evidence_in_folder(folder_path, recurse=True),
+    )
+    if not evidence:
+        return
+
+    def _resolve_item(item, section_name='', person=''):
+        if item.get('status') not in ('error', 'warning'):
+            return False, []
+        text = f"{item.get('label', '')} {item.get('note', '')}"
+        tags = _tags_from_pending_text(text)
+        found, found_tag = _best_global_evidence(evidence, tags, person=person)
+        if not found:
+            return False, tags
+        note = get_evidence_note({found_tag: [found]}, found_tag)
+        where = note or f"Encontrado em {found.get('fileName') or 'PDF da competencia'}"
+        old_note = item.get('note', '')
+        prefix = "Busca profunda encontrou evidência fora da conferência inicial"
+        item['status'] = 'ok'
+        item['note'] = f"{prefix}: {where}" if not old_note or old_note in ('FALTANDO', 'Não encontrado', 'Não identificado') else f"{old_note} | {prefix}: {where}"
+        item['deep_resolved'] = True
+        return True, tags
+
+    def _issue_matches(issue_text, tags):
+        issue_tags = set(_tags_from_pending_text(issue_text))
+        return bool(issue_tags.intersection(tags))
+
+    for sec in sections:
+        resolved_tags = []
+        for item in sec.get('items', []):
+            resolved, tags = _resolve_item(item, section_name=sec.get('name', ''))
+            if resolved:
+                resolved_tags.extend(tags)
+
+        for emp in sec.get('employees', []):
+            emp_resolved_tags = []
+            for item in emp.get('items', []):
+                resolved, tags = _resolve_item(item, section_name=sec.get('name', ''), person=emp.get('name', ''))
+                if resolved:
+                    emp_resolved_tags.extend(tags)
+                    resolved_tags.extend(tags)
+            if emp_resolved_tags:
+                emp['issues'] = [
+                    issue for issue in emp.get('issues', [])
+                    if not _issue_matches(issue, emp_resolved_tags)
+                ]
+                emp['status'] = 'error' if any(i.get('status') == 'error' for i in emp.get('items', [])) else \
+                                'warning' if any(i.get('status') == 'warning' for i in emp.get('items', [])) else 'ok'
+
+        if resolved_tags:
+            sec['issues'] = [
+                issue for issue in sec.get('issues', [])
+                if not _issue_matches(issue.get('msg', '') if isinstance(issue, dict) else issue, resolved_tags)
+            ]
+            has_emp_error = any(emp.get('status') == 'error' for emp in sec.get('employees', []))
+            has_emp_warning = any(emp.get('status') == 'warning' for emp in sec.get('employees', []))
+            sec['status'] = 'error' if sec.get('issues') or any(i.get('status') == 'error' for i in sec.get('items', [])) or has_emp_error else \
+                            'warning' if any(i.get('status') == 'warning' for i in sec.get('items', [])) or has_emp_warning else 'ok'
+
+
 def _join_scope(scope, msg):
     return f'{scope}: {msg}' if scope else msg
 
@@ -776,21 +925,45 @@ def audit_prev_month_comparison(folder_path, current_employees, month_num, year)
 
 def _pdf_diagnostic_section(diagnostics):
     section = {'name': 'Diagnóstico da Auditoria PDF', 'icon': '🧪', 'items': [], 'issues': [], 'status': 'info'}
-    section['items'].append(_item('Modo de análise', 'info', diagnostics.get('mode', 'rapida sem OCR')))
-    section['items'].append(_item('PDFs encontrados', 'info', str(diagnostics.get('pdf_files', 0))))
-    section['items'].append(_item('PDFs analisados agora', 'info', str(diagnostics.get('analyzed_files', 0))))
-    section['items'].append(_item('Resultados reutilizados do cache', 'info', str(diagnostics.get('cache_hits', 0))))
-    section['items'].append(_item('Páginas processadas', 'info', str(diagnostics.get('pages_processed', 0))))
-    section['items'].append(_item('Páginas com texto digital', 'info', str(diagnostics.get('digital_pages', 0))))
-    section['items'].append(_item('Páginas com OCR', 'info', str(diagnostics.get('ocr_pages', 0))))
+    pdf_total = int(diagnostics.get('pdf_files', 0) or 0)
+    analyzed_now = int(diagnostics.get('analyzed_files', 0) or 0)
+    cache_hits = int(diagnostics.get('cache_hits', 0) or 0)
+    considered = max(pdf_total, analyzed_now + cache_hits)
+    section['items'].append(_item('Modo de analise', 'info', diagnostics.get('mode', 'rapida sem OCR')))
+    section['items'].append(_item('Cache da medicao', 'info', 'ignorado nesta execucao' if diagnostics.get('force_reprocess') else 'reutilizado quando valido'))
+    section['items'].append(_item('Escopo do OCR', 'info', diagnostics.get('ocr_scope', '-')))
+    section['items'].append(_item('PDFs considerados na auditoria', 'info', str(considered)))
+    section['items'].append(_item('PDFs reprocessados nesta execucao', 'info', str(analyzed_now)))
+    section['items'].append(_item('PDFs reutilizados do cache', 'info', str(cache_hits)))
+    section['items'].append(_item('Paginas reprocessadas nesta execucao', 'info', str(diagnostics.get('pages_processed', 0))))
+    section['items'].append(_item('Paginas com texto digital nesta execucao', 'info', str(diagnostics.get('digital_pages', 0))))
+    section['items'].append(_item('Paginas com OCR nesta execucao', 'info', str(diagnostics.get('ocr_pages', 0))))
 
-    for doc in diagnostics.get('documents_found', [])[:30]:
+    docs_unicos = []
+    vistos = set()
+    for doc in diagnostics.get('documents_found', []):
+        pages = doc.get('pages') or []
+        chave = (
+            doc.get('documentType') or doc.get('documentName') or '',
+            doc.get('fileName') or '',
+            tuple(pages),
+            doc.get('confidence') or '',
+            doc.get('method') or '',
+        )
+        if chave in vistos:
+            continue
+        vistos.add(chave)
+        docs_unicos.append(doc)
+
+    for doc in docs_unicos[:30]:
         pages = doc.get('pages') or []
         page_txt = f"páginas {min(pages)}-{max(pages)}" if pages else "páginas ?"
         confidence = doc.get('confidence') or 'media'
         label = f"{doc.get('documentName') or doc.get('documentType')} em {doc.get('fileName')}"
         note = f"{page_txt}; confiança {confidence}; método {doc.get('method') or 'conteúdo'}"
-        status = 'ok' if confidence == 'alta' else 'warning'
+        if confidence != 'alta':
+            note = f"{note}; achado tecnico para conferencia, nao e pendencia"
+        status = 'ok' if confidence == 'alta' else 'info'
         section['items'].append(_item(label, status, note))
 
     for err in diagnostics.get('errors', [])[:10]:
@@ -801,8 +974,13 @@ def _pdf_diagnostic_section(diagnostics):
     return section
 
 
-def run_audit(folder_path, enable_ocr=False, analyze_pdf_content=False, progress_cb=None):
-    configure_pdf_audit(enable_ocr=enable_ocr, analyze_content=analyze_pdf_content or enable_ocr, progress_cb=progress_cb)
+def run_audit(folder_path, enable_ocr=False, analyze_pdf_content=False, progress_cb=None, force_reprocess=False):
+    configure_pdf_audit(
+        enable_ocr=enable_ocr,
+        analyze_content=analyze_pdf_content or enable_ocr,
+        progress_cb=progress_cb,
+        force_reprocess=force_reprocess,
+    )
     config = load_config()
     result = {
         'folder_path': folder_path,
@@ -916,6 +1094,7 @@ def run_audit(folder_path, enable_ocr=False, analyze_pdf_content=False, progress
     diagnostics = get_pdf_audit_diagnostics()
     result['diagnostics'] = diagnostics
     result['sections'].append(_pdf_diagnostic_section(diagnostics))
+    _resolve_pendencias_por_busca_profunda(result['sections'], folder_path)
 
     # Aggregate all issues (employees only — section-level issues already cover them)
     for sec in result['sections']:
@@ -927,13 +1106,13 @@ def run_audit(folder_path, enable_ocr=False, analyze_pdf_content=False, progress
             for issue in emp.get('issues', []):
                 result['all_issues'].append({'msg': f"{sec['name']} — {emp['name']}: {issue}", 'section': sec['name']})
 
-    # Overall status
+    # Overall status: avisos tecnicos sem pendencia real nao devem gerar ATENCAO.
     statuses = [sec.get('status', 'ok') for sec in result['sections']]
-    if 'error' in statuses:
-        result['overall_status'] = 'error'
-    elif 'warning' in statuses:
-        result['overall_status'] = 'warning'
-    else:
+    if not result['all_issues']:
         result['overall_status'] = 'ok'
+    elif 'error' in statuses:
+        result['overall_status'] = 'error'
+    else:
+        result['overall_status'] = 'warning'
 
     return result

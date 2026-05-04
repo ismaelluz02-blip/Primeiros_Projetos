@@ -3791,6 +3791,7 @@ seguros_filtro_status = "TODOS"
 tarefas_filtro_atual = "TODAS"
 tarefas_busca_atual = ""
 tarefas_categoria_atual = "Todas"
+TAREFA_RESPONSAVEL_PADRAO = "Ismael Luz"
 
 # Registrar callbacks para src.documentos notificar mudanças na UI
 _register_doc_on_change(_atualizar_cache_documentos_pos_alteracao)
@@ -6719,7 +6720,7 @@ def _abrir_dialogo_tarefa(tarefa=None):
     editando = bool(tarefa)
     dialog = ctk.CTkToplevel(app)
     dialog.title("Editar Tarefa" if editando else "Nova Tarefa")
-    centralizar_janela(dialog, 720, 620)
+    centralizar_janela(dialog, 720, 500)
     dialog.grab_set()
 
     frame = ctk.CTkFrame(dialog, fg_color="transparent")
@@ -6748,33 +6749,22 @@ def _abrir_dialogo_tarefa(tarefa=None):
     _label("Responsável", 4, 1)
     responsavel = ctk.CTkEntry(frame, height=36, placeholder_text="Ex.: Ismael, Financeiro")
     responsavel.grid(row=5, column=1, sticky="ew", padx=6, pady=(0, 10))
-    responsavel.insert(0, tarefa.get("responsavel", "") if tarefa else "")
-
-    _label("Prazo (dd/mm/aaaa)", 6, 0)
-    prazo = ctk.CTkEntry(frame, height=36, placeholder_text="Sem prazo")
-    prazo.grid(row=7, column=0, sticky="ew", padx=6, pady=(0, 10))
-    prazo_val = formatar_prazo_br(tarefa.get("prazo", "")) if tarefa else ""
-    prazo.insert(0, "" if prazo_val == "Sem prazo" else prazo_val)
-
-    _label("Tags", 6, 1)
-    tags = ctk.CTkEntry(frame, height=36, placeholder_text="Ex.: mensal, cliente")
-    tags.grid(row=7, column=1, sticky="ew", padx=6, pady=(0, 10))
-    tags.insert(0, tarefa.get("tags", "") if tarefa else "")
+    responsavel.insert(0, tarefa.get("responsavel", "") if tarefa else TAREFA_RESPONSAVEL_PADRAO)
 
     prioridade_map = {v: k for k, v in TAREFA_PRIORIDADE_LABELS.items()}
     status_map = {v: k for k, v in TAREFA_STATUS_LABELS.items()}
-    _label("Prioridade", 8, 0)
+    _label("Prioridade", 6, 0)
     prioridade = ctk.CTkComboBox(frame, values=list(prioridade_map.keys()), height=36)
     prioridade.set(TAREFA_PRIORIDADE_LABELS.get(tarefa.get("prioridade", "MEDIA"), "Média") if tarefa else "Média")
-    prioridade.grid(row=9, column=0, sticky="ew", padx=6, pady=(0, 12))
+    prioridade.grid(row=7, column=0, sticky="ew", padx=6, pady=(0, 12))
 
-    _label("Status", 8, 1)
+    _label("Status", 6, 1)
     status = ctk.CTkComboBox(frame, values=list(status_map.keys()), height=36)
     status.set(TAREFA_STATUS_LABELS.get(tarefa.get("status", "A_FAZER"), "A Fazer") if tarefa else "A Fazer")
-    status.grid(row=9, column=1, sticky="ew", padx=6, pady=(0, 12))
+    status.grid(row=7, column=1, sticky="ew", padx=6, pady=(0, 12))
 
     actions = ctk.CTkFrame(frame, fg_color="transparent")
-    actions.grid(row=10, column=0, columnspan=2, sticky="ew", padx=6, pady=(4, 0))
+    actions.grid(row=8, column=0, columnspan=2, sticky="ew", padx=6, pady=(4, 0))
     actions.grid_columnconfigure((0, 1, 2), weight=1)
 
     def _salvar():
@@ -6784,10 +6774,8 @@ def _abrir_dialogo_tarefa(tarefa=None):
                 "descricao": descricao.get("1.0", "end").strip(),
                 "categoria": categoria.get(),
                 "responsavel": responsavel.get(),
-                "prazo": prazo.get(),
                 "prioridade": prioridade_map.get(prioridade.get(), "MEDIA"),
                 "status": status_map.get(status.get(), "A_FAZER"),
-                "tags": tags.get(),
             }
             if editando:
                 atualizar_tarefa(tarefa["id"], **dados)
@@ -6813,6 +6801,199 @@ def _abrir_dialogo_tarefa(tarefa=None):
 def _mover_tarefa_ui(tarefa_id, status):
     mover_tarefa(tarefa_id, status)
     _persistir_e_recriar_tarefas()
+
+
+def _status_drop_tarefa(widget):
+    atual = widget
+    while atual is not None:
+        status = getattr(atual, "_tarefas_drop_status", None)
+        if status:
+            return status
+        atual = getattr(atual, "master", None)
+    return None
+
+
+def _status_drop_tarefa_por_posicao(x_root, y_root, estado_arrasto):
+    for status, coluna in estado_arrasto.get("drop_cols", {}).items():
+        try:
+            x = coluna.winfo_rootx()
+            y = coluna.winfo_rooty()
+            largura = coluna.winfo_width()
+            altura = coluna.winfo_height()
+        except Exception:
+            continue
+        if x <= x_root <= x + largura and y <= y_root <= y + altura:
+            return status
+    return None
+
+
+def _destacar_coluna_drop_tarefa(status, estado_arrasto):
+    anterior = estado_arrasto.get("status_destacado")
+    if anterior == status:
+        return
+    colunas = estado_arrasto.get("drop_cols", {})
+    if anterior in colunas:
+        try:
+            colunas[anterior].configure(border_color=UI_THEME["border"], border_width=1)
+        except Exception:
+            pass
+    if status in colunas:
+        try:
+            colunas[status].configure(border_color=UI_THEME["accent"], border_width=2)
+        except Exception:
+            pass
+    estado_arrasto["status_destacado"] = status
+
+
+def _limpar_feedback_arrasto_tarefa(estado_arrasto):
+    _destacar_coluna_drop_tarefa(None, estado_arrasto)
+    ghost = estado_arrasto.get("ghost")
+    if ghost is not None:
+        try:
+            ghost.destroy()
+        except Exception:
+            pass
+    card = estado_arrasto.get("card")
+    if card is not None:
+        try:
+            card.configure(fg_color=UI_THEME["surface_alt"])
+        except Exception:
+            pass
+
+
+def _criar_ghost_arrasto_tarefa(tarefa, prioridade, cor_prio, x_root, y_root):
+    ghost = ctk.CTkToplevel(app)
+    ghost.overrideredirect(True)
+    ghost.attributes("-topmost", True)
+    try:
+        ghost.attributes("-alpha", 0.88)
+    except Exception:
+        pass
+    ghost.configure(fg_color=UI_THEME["app_bg"])
+
+    frame = ctk.CTkFrame(
+        ghost,
+        fg_color=UI_THEME["surface_alt"],
+        corner_radius=10,
+        border_width=2,
+        border_color=cor_prio,
+        width=190,
+    )
+    frame.pack(fill="both", expand=True)
+    ctk.CTkLabel(
+        frame,
+        text=str(tarefa.get("titulo") or "Sem título"),
+        wraplength=170,
+        justify="left",
+        font=ctk.CTkFont(family="Segoe UI", size=12, weight="bold"),
+        text_color=UI_THEME["text_primary"],
+        anchor="w",
+    ).pack(fill="x", padx=9, pady=(9, 2))
+    meta = f"{tarefa.get('categoria') or 'Sem categoria'} • {tarefa.get('responsavel') or 'Sem responsável'}"
+    ctk.CTkLabel(
+        frame,
+        text=meta,
+        wraplength=170,
+        justify="left",
+        font=ctk.CTkFont(family="Segoe UI", size=9),
+        text_color=UI_THEME["text_secondary"],
+        anchor="w",
+    ).pack(fill="x", padx=9)
+    ctk.CTkLabel(
+        frame,
+        text=TAREFA_PRIORIDADE_LABELS.get(prioridade, "Média"),
+        fg_color=cor_prio,
+        corner_radius=8,
+        text_color="#FFFFFF",
+        font=ctk.CTkFont(family="Segoe UI", size=9, weight="bold"),
+        width=58,
+    ).pack(anchor="w", padx=9, pady=(6, 9))
+
+    ghost.update_idletasks()
+    ghost.geometry(f"+{x_root + 14}+{y_root + 14}")
+    return ghost
+
+
+def _vincular_arrasto_tarefa(widget, tarefa, estado_arrasto):
+    def _iniciar(event):
+        drop_cols = estado_arrasto.get("drop_cols", {})
+        _limpar_feedback_arrasto_tarefa(estado_arrasto)
+        estado_arrasto.clear()
+        estado_arrasto.update({
+            "id": tarefa["id"],
+            "status": tarefa.get("status"),
+            "x": event.x_root,
+            "y": event.y_root,
+            "moveu": False,
+            "card": widget,
+            "drop_cols": drop_cols,
+        })
+        try:
+            widget.configure(cursor="hand2")
+        except Exception:
+            pass
+        return "break"
+
+    def _arrastar(event):
+        if not estado_arrasto:
+            return "break"
+        dx = abs(event.x_root - estado_arrasto.get("x", event.x_root))
+        dy = abs(event.y_root - estado_arrasto.get("y", event.y_root))
+        if dx + dy > 8:
+            estado_arrasto["moveu"] = True
+            if estado_arrasto.get("ghost") is None:
+                prioridade = str(tarefa.get("prioridade") or "MEDIA").upper()
+                estado_arrasto["ghost"] = _criar_ghost_arrasto_tarefa(
+                    tarefa,
+                    prioridade,
+                    _prioridade_tarefa_cor(prioridade),
+                    event.x_root,
+                    event.y_root,
+                )
+                try:
+                    widget.configure(fg_color=UI_THEME["surface"])
+                except Exception:
+                    pass
+            else:
+                try:
+                    estado_arrasto["ghost"].geometry(f"+{event.x_root + 14}+{event.y_root + 14}")
+                except Exception:
+                    pass
+            _destacar_coluna_drop_tarefa(_status_drop_tarefa_por_posicao(event.x_root, event.y_root, estado_arrasto), estado_arrasto)
+        return "break"
+
+    def _soltar(event):
+        if not estado_arrasto:
+            return "break"
+        moveu = estado_arrasto.get("moveu")
+        status_atual = estado_arrasto.get("status")
+        novo_status = _status_drop_tarefa_por_posicao(event.x_root, event.y_root, estado_arrasto)
+        if novo_status is None:
+            alvo = widget.winfo_containing(event.x_root, event.y_root)
+            novo_status = _status_drop_tarefa(alvo) if alvo is not None else None
+        _limpar_feedback_arrasto_tarefa(estado_arrasto)
+        drop_cols = estado_arrasto.get("drop_cols", {})
+        estado_arrasto.clear()
+        estado_arrasto["drop_cols"] = drop_cols
+        try:
+            widget.configure(cursor="")
+        except Exception:
+            pass
+        if moveu and novo_status and novo_status != status_atual:
+            _mover_tarefa_ui(tarefa["id"], novo_status)
+        elif not moveu:
+            _abrir_dialogo_tarefa(dict(tarefa))
+        return "break"
+
+    def _todos_filhos(alvo):
+        yield alvo
+        for filho in alvo.winfo_children():
+            yield from _todos_filhos(filho)
+
+    for alvo in _todos_filhos(widget):
+        alvo.bind("<ButtonPress-1>", _iniciar)
+        alvo.bind("<B1-Motion>", _arrastar)
+        alvo.bind("<ButtonRelease-1>", _soltar)
 
 
 def _criar_tela_hoje(parent):
@@ -7231,39 +7412,65 @@ def _criar_tela_tarefas(parent):
     board = ctk.CTkFrame(tela, fg_color="transparent")
     board.pack(fill="x", padx=18, pady=(0, 16))
     board.grid_columnconfigure((0, 1, 2, 3), weight=1, uniform="kanban")
+    estado_arrasto_tarefa = {"drop_cols": {}}
 
     for col_idx, status in enumerate(STATUS_TAREFA):
         coluna = _criar_card(board, corner_radius=18)
+        coluna._tarefas_drop_status = status
+        estado_arrasto_tarefa["drop_cols"][status] = coluna
         coluna.grid(row=0, column=col_idx, sticky="nsew", padx=5)
         ctk.CTkLabel(coluna, text=f"{TAREFA_STATUS_LABELS[status]} ({len(por_status.get(status, []))})", font=ctk.CTkFont(family="Segoe UI", size=14, weight="bold"), text_color=UI_THEME["text_primary"]).pack(anchor="w", padx=12, pady=(12, 8))
         lista = ctk.CTkScrollableFrame(coluna, height=430, fg_color="transparent")
+        lista._tarefas_drop_status = status
         lista.pack(fill="both", expand=True, padx=8, pady=(0, 10))
         if not por_status.get(status):
             ctk.CTkLabel(lista, text="Sem tarefas.", font=ctk.CTkFont(family="Segoe UI", size=11), text_color=UI_THEME["text_secondary"]).pack(anchor="w", padx=8, pady=8)
         for tarefa in por_status.get(status, []):
-            _criar_card_tarefa(lista, tarefa)
+            _criar_card_tarefa(lista, tarefa, estado_arrasto_tarefa)
     return tela
 
 
-def _criar_card_tarefa(parent, tarefa):
+def _criar_card_tarefa(parent, tarefa, estado_arrasto):
     prioridade = str(tarefa.get("prioridade") or "MEDIA").upper()
     cor_prio = _prioridade_tarefa_cor(prioridade)
-    card = ctk.CTkFrame(parent, fg_color=UI_THEME["surface_alt"], corner_radius=14, border_width=1, border_color=cor_prio)
-    card.pack(fill="x", padx=4, pady=6)
-    card.bind("<Button-1>", lambda _e, t=dict(tarefa): _abrir_dialogo_tarefa(t))
+    card = ctk.CTkFrame(parent, fg_color=UI_THEME["surface_alt"], corner_radius=10, border_width=1, border_color=cor_prio)
+    card.pack(fill="x", padx=4, pady=4)
+
     titulo = str(tarefa.get("titulo") or "Sem título")
-    ctk.CTkLabel(card, text=titulo, wraplength=210, justify="left", font=ctk.CTkFont(family="Segoe UI", size=13, weight="bold"), text_color=UI_THEME["text_primary"], anchor="w").pack(fill="x", padx=10, pady=(10, 4))
+    ctk.CTkLabel(
+        card,
+        text=titulo,
+        wraplength=180,
+        justify="left",
+        font=ctk.CTkFont(family="Segoe UI", size=12, weight="bold"),
+        text_color=UI_THEME["text_primary"],
+        anchor="w",
+    ).pack(fill="x", padx=8, pady=(8, 2))
+
     meta = f"{tarefa.get('categoria') or 'Sem categoria'} • {tarefa.get('responsavel') or 'Sem responsável'}"
-    ctk.CTkLabel(card, text=meta, wraplength=210, justify="left", font=ctk.CTkFont(family="Segoe UI", size=10), text_color=UI_THEME["text_secondary"], anchor="w").pack(fill="x", padx=10)
+    ctk.CTkLabel(
+        card,
+        text=meta,
+        wraplength=180,
+        justify="left",
+        font=ctk.CTkFont(family="Segoe UI", size=9),
+        text_color=UI_THEME["text_secondary"],
+        anchor="w",
+    ).pack(fill="x", padx=8)
+
     row = ctk.CTkFrame(card, fg_color="transparent")
-    row.pack(fill="x", padx=10, pady=(8, 6))
-    ctk.CTkLabel(row, text=TAREFA_PRIORIDADE_LABELS.get(prioridade, "Média"), fg_color=cor_prio, corner_radius=10, text_color="#FFFFFF", font=ctk.CTkFont(family="Segoe UI", size=10, weight="bold"), width=64).pack(side="left")
-    ctk.CTkLabel(row, text=formatar_prazo_br(tarefa.get("prazo")), text_color=_prazo_tarefa_cor(tarefa), font=ctk.CTkFont(family="Segoe UI", size=10, weight="bold")).pack(side="right")
-    mover = ctk.CTkFrame(card, fg_color="transparent")
-    mover.pack(fill="x", padx=8, pady=(0, 8))
-    outros = [s for s in STATUS_TAREFA if s != tarefa.get("status")]
-    for status in outros[:3]:
-        ctk.CTkButton(mover, text=TAREFA_STATUS_LABELS[status].split()[0], height=24, width=58, corner_radius=8, fg_color=UI_THEME["surface"], hover_color=UI_THEME["tab_hover"], border_width=1, border_color=UI_THEME["border"], text_color=UI_THEME["text_primary"], font=ctk.CTkFont(family="Segoe UI", size=9), command=lambda tid=tarefa["id"], st=status: _mover_tarefa_ui(tid, st)).pack(side="left", padx=2)
+    row.pack(fill="x", padx=8, pady=(6, 7))
+    ctk.CTkLabel(
+        row,
+        text=TAREFA_PRIORIDADE_LABELS.get(prioridade, "Média"),
+        fg_color=cor_prio,
+        corner_radius=8,
+        text_color="#FFFFFF",
+        font=ctk.CTkFont(family="Segoe UI", size=9, weight="bold"),
+        width=58,
+    ).pack(side="left")
+
+    _vincular_arrasto_tarefa(card, tarefa, estado_arrasto)
 
 
 def _criar_tela_medicao(parent):
@@ -7354,6 +7561,15 @@ def _criar_tela_medicao(parent):
     ).pack(anchor="w", padx=18, pady=(0, 8))
 
     # ttk.Progressbar — identical to what worked in the standalone app
+    force_reprocess_var = tk.BooleanVar(value=False)
+    ctk.CTkCheckBox(
+        act_card,
+        text="Reanalisar todos os PDFs nesta medicao (ignorar cache)",
+        variable=force_reprocess_var,
+        font=ctk.CTkFont(family="Segoe UI", size=11),
+        text_color=UI_THEME["text_primary"],
+    ).pack(anchor="w", padx=18, pady=(0, 8))
+
     progress_style = ttk.Style()
     progress_style.configure("Medicao.Horizontal.TProgressbar",
                               troughcolor=UI_THEME.get("surface_alt", "#e0e0e0"),
@@ -7445,10 +7661,18 @@ def _criar_tela_medicao(parent):
             messagebox.showerror("Erro", f"Pasta não encontrada:\n{folder}")
             return
         enable_ocr = bool(ocr_var.get())
+        force_reprocess = bool(force_reprocess_var.get())
         if enable_ocr:
             ok = messagebox.askyesno(
                 "Análise profunda com OCR",
                 "O OCR pode demorar em PDFs grandes. Deseja continuar com a análise profunda?"
+            )
+            if not ok:
+                return
+        if force_reprocess:
+            ok = messagebox.askyesno(
+                "Reanalisar PDFs",
+                "A medicao vai ignorar o cache e abrir todos os PDFs novamente. Isso pode demorar bastante. Deseja continuar?"
             )
             if not ok:
                 return
@@ -7459,12 +7683,16 @@ def _criar_tela_medicao(parent):
         progress.start(12)
         _set_status("Auditando em modo profundo com OCR..." if enable_ocr else "Auditando em modo rápido...", UI_THEME.get("accent", "#2980b9"))
 
+        if force_reprocess:
+            _set_status("Reanalisando todos os PDFs...", UI_THEME.get("accent", "#2980b9"))
+
         # Clear previous log for this run
         try:
             os.makedirs(os.path.dirname(_LOG), exist_ok=True)
             with open(_LOG, "w", encoding="utf-8") as _f:
                 _f.write(f"[audit] folder={folder}\n")
                 _f.write(f"[audit] mode={'ocr' if enable_ocr else 'safe'}\n")
+                _f.write(f"[audit] force_reprocess={force_reprocess}\n")
         except Exception:
             pass
 
@@ -7508,16 +7736,122 @@ def _criar_tela_medicao(parent):
                 return None
 
         def _worker():
+            import subprocess
+            import tempfile
+
+            child_code = r'''
+import json
+import os
+import sys
+import traceback
+
+project_dir = sys.argv[4]
+if project_dir and project_dir not in sys.path:
+    sys.path.insert(0, project_dir)
+
+from src.medicao.auditor import run_audit
+from src.medicao.report import generate_report
+
+folder = sys.argv[1]
+enable_ocr = sys.argv[2] == "1"
+out_path = sys.argv[3]
+force_reprocess = sys.argv[5] == "1" if len(sys.argv) > 5 else False
+
+def emit(payload):
+    print(json.dumps(payload, ensure_ascii=False), flush=True)
+
+def progress(message):
+    emit({"type": "progress", "message": message})
+
+try:
+    result = run_audit(
+        folder,
+        enable_ocr=enable_ocr,
+        analyze_pdf_content=enable_ocr,
+        progress_cb=progress,
+        force_reprocess=force_reprocess,
+    )
+    report_path = generate_report(result, folder)
+    with open(out_path, "w", encoding="utf-8") as f:
+        json.dump({"ok": True, "result": result, "report_path": report_path}, f, ensure_ascii=False)
+    emit({"type": "done", "report_path": report_path})
+except BaseException as exc:
+    tb = traceback.format_exc()
+    try:
+        with open(out_path, "w", encoding="utf-8") as f:
+            json.dump({"ok": False, "error": str(exc), "traceback": tb}, f, ensure_ascii=False)
+    except Exception:
+        pass
+    emit({"type": "error", "message": str(exc), "traceback": tb})
+    sys.exit(1)
+'''
+
+            script_path = None
+            output_path = None
+            last_progress = ""
+            child_lines = []
             try:
-                _log("[audit] run_audit starting")
-                result = _medicao_run_audit(
-                    folder,
-                    enable_ocr=enable_ocr,
-                    analyze_pdf_content=enable_ocr,
-                    progress_cb=_progress_msg,
+                with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False, encoding="utf-8") as script_file:
+                    script_file.write(child_code)
+                    script_path = script_file.name
+                with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as output_file:
+                    output_path = output_file.name
+
+                _log("[audit] isolated process starting")
+                flags = subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0
+                python_exe = sys.executable
+                if getattr(sys, "frozen", False):
+                    python_exe = shutil.which("python") or shutil.which("pythonw") or sys.executable
+                proc = subprocess.Popen(
+                    [python_exe, script_path, folder, "1" if enable_ocr else "0", output_path, SCRIPT_DIR, "1" if force_reprocess else "0"],
+                    cwd=SCRIPT_DIR,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    creationflags=flags,
                 )
-                _log("[audit] run_audit done, generating report")
-                rpath = _medicao_generate_report(result, folder)
+
+                for line in proc.stdout or []:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    child_lines.append(line)
+                    _log(f"[child] {line}")
+                    try:
+                        event = json.loads(line)
+                    except Exception:
+                        continue
+                    if event.get("type") == "progress":
+                        last_progress = event.get("message", "")
+                        _progress_msg(last_progress)
+
+                return_code = proc.wait()
+
+                payload = {}
+                if output_path and os.path.exists(output_path) and os.path.getsize(output_path) > 0:
+                    try:
+                        with open(output_path, "r", encoding="utf-8") as f:
+                            payload = json.load(f)
+                    except Exception as exc:
+                        _log(f"[audit] invalid child result: {exc}")
+
+                if return_code != 0 or not payload.get("ok"):
+                    err = payload.get("error") or "A auditoria foi interrompida pelo mecanismo de PDF/OCR."
+                    tb = payload.get("traceback") or ""
+                    if tb:
+                        _log(f"[audit] isolated process failed:\n{tb}")
+                    elif child_lines:
+                        detalhe = "\n".join(child_lines[-8:])
+                        _log(f"[audit] isolated process output before failure:\n{detalhe}")
+                        err = f"{err}\n\nDetalhe técnico: {child_lines[-1]}"
+                    if last_progress:
+                        err = f"{err}\n\nÚltimo arquivo processado: {last_progress}"
+                    raise RuntimeError(err)
+
+                result = payload["result"]
+                rpath = payload["report_path"]
                 _log(f"[audit] report written: {rpath}")
                 _state["report_path"] = rpath
                 _state["diagnostic_path"] = _write_diagnostic(result)
@@ -7539,6 +7873,13 @@ def _criar_tela_medicao(parent):
                 _log(f"[audit] EXCEPTION:\n{tb}")
                 err = str(exc)
                 app.after(0, lambda e=err: _audit_error(e))
+            finally:
+                for path in (script_path, output_path):
+                    if path:
+                        try:
+                            os.unlink(path)
+                        except OSError:
+                            pass
 
         threading.Thread(target=_worker, daemon=True).start()
 

@@ -3,6 +3,7 @@ import tempfile
 import hashlib
 import re
 import unicodedata
+import html
 
 STATUS_ICON = {'ok': '✅', 'error': '❌', 'warning': '⚠️', 'info': 'ℹ️'}
 STATUS_COLOR = {'ok': '#27ae60', 'error': '#e74c3c', 'warning': '#f39c12', 'info': '#3498db'}
@@ -60,6 +61,134 @@ def _parse_issue(msg):
     return section, person, text
 
 
+def _h(text):
+    return html.escape(str(text or ''), quote=True)
+
+
+def _dedupe_issues(issues, folder):
+    deduped = []
+    seen = {}
+    for issue in issues or []:
+        issue_dict = issue if isinstance(issue, dict) else {'msg': str(issue)}
+        msg = issue_dict.get('msg', '')
+        section, person, text = _parse_issue(msg)
+        key = _issue_storage_id(folder, section or issue_dict.get('section', ''), person, text)
+        if key in seen:
+            seen[key]['duplicate_count'] = seen[key].get('duplicate_count', 1) + 1
+            continue
+        item = dict(issue_dict)
+        item['duplicate_count'] = int(item.get('duplicate_count', 1) or 1)
+        item['_dedupe_key'] = key
+        deduped.append(item)
+        seen[key] = item
+    return deduped
+
+
+def _pending_explanation(text, section='', person='', note=''):
+    raw = ' '.join(str(v or '') for v in (section, person, text, note))
+    n = _norm(raw)
+    subject = str(text or '').strip() or str(note or '').strip() or 'Item sinalizado'
+    scope = []
+    if section:
+        scope.append(f"seção {section}")
+    if person:
+        scope.append(f"colaborador(a) {person}")
+    scope_txt = ' / '.join(scope) if scope else 'escopo desta conferência'
+
+    if 'pasta' in n and ('nao encontrada' in n or 'sem pasta' in n):
+        reason = (
+            f"O auditor esperava encontrar uma pasta obrigatória para {scope_txt}, mas a pasta não foi localizada "
+            "com os nomes/padrões aceitos pela medição."
+        )
+        expected = (
+            "A pasta deveria existir dentro da competência, com nome compatível com o tipo de documento exigido "
+            "e, quando for por colaborador, contendo uma subpasta ou arquivos identificáveis para a pessoa correta."
+        )
+        check = (
+            "Confira se a pasta foi criada, se não ficou dentro de outra pasta por engano, se o nome não está muito diferente "
+            "do padrão e se os arquivos não foram enviados soltos em outro local."
+        )
+    elif 'vazia' in n or 'nenhum arquivo' in n:
+        reason = (
+            f"A estrutura foi encontrada em {scope_txt}, mas não havia arquivo suficiente para comprovar o requisito."
+        )
+        expected = (
+            "Deveria haver pelo menos um PDF/arquivo válido dentro da pasta correta, com conteúdo legível e relacionado ao documento solicitado."
+        )
+        check = (
+            "Verifique se o arquivo foi salvo na competência certa, se não está em uma subpasta inesperada, se não ficou com extensão diferente "
+            "e se o PDF abre normalmente."
+        )
+    elif 'verificar se se aplica' in n or 'pode nao haver' in n or 'nao identificado' in n:
+        reason = (
+            "O auditor não encontrou evidência suficiente para confirmar automaticamente se este item se aplica ou se pode ser dispensado."
+        )
+        expected = (
+            "Se o documento for obrigatório para este caso, ele deveria estar na pasta correspondente e identificado por nome ou conteúdo. "
+            "Se não for obrigatório, precisa ficar justificado para auditoria."
+        )
+        check = (
+            "Confira a situação do colaborador/competência, o tipo de contrato e a regra operacional. Se realmente não se aplicar, registre a justificativa."
+        )
+    elif 'nao encontrado' in n or 'faltando' in n:
+        reason = (
+            f"O auditor procurou por '{subject}' em {scope_txt}, mas não encontrou evidência confiável no nome do arquivo nem no conteúdo analisado."
+        )
+        expected = (
+            "O documento deveria estar na pasta correta da competência, preferencialmente no grupo certo e, quando envolver colaborador, "
+            "na pasta da pessoa correspondente. O arquivo também precisa ter texto digital ou OCR suficiente para ser reconhecido."
+        )
+        check = (
+            "Verifique se o documento existe, se está na pasta errada, se está com nome genérico, se foi anexado no colaborador errado, "
+            "se o PDF está escaneado com baixa qualidade ou se o conteúdo pertence a outro documento."
+        )
+    elif 'confianca media' in n or 'confiança media' in n:
+        reason = (
+            "O documento foi encontrado, mas a classificação ficou com confiança média. Isso significa que o sistema viu algumas evidências, "
+            "mas não encontrou sinais fortes o bastante para considerar o item totalmente confirmado."
+        )
+        expected = (
+            "O arquivo deveria conter termos claros do documento esperado, páginas coerentes e conteúdo legível para que a confiança fique alta."
+        )
+        check = (
+            "Abra o PDF e confira se as páginas indicadas realmente correspondem ao documento. Se estiver correto, pode justificar; se não, reorganize ou renomeie."
+        )
+    else:
+        reason = (
+            f"O item foi marcado porque a regra de conferência da seção {section or 'atual'} não encontrou uma comprovação completa."
+        )
+        expected = (
+            "O esperado é que a pasta, o arquivo, o nome e o conteúdo batam com o requisito da medição para a competência auditada."
+        )
+        check = (
+            "Confira localização, nome do arquivo, legibilidade do PDF, páginas apontadas, colaborador vinculado e se o documento pertence ao mês correto."
+        )
+
+    return reason, expected, check
+
+
+def _detail_box(text, section='', person='', note='', duplicate_count=1):
+    reason, expected, check = _pending_explanation(text, section=section, person=person, note=note)
+    dup = ''
+    if duplicate_count and duplicate_count > 1:
+        dup = f'<div style="margin-top:6px;color:#8a5a00"><strong>Ocorrências agrupadas:</strong> este mesmo problema apareceu {duplicate_count} vezes e foi consolidado aqui.</div>'
+    path_html = ''
+    match = re.search(r'caminho:\s*(.+?)(?:\s*\||$)', str(note or ''))
+    if match:
+        path = match.group(1).strip()
+        path_html = f'''
+      <div style="margin-top:6px"><strong>Endereço do arquivo:</strong></div>
+      <div style="margin-top:3px;background:#fff;border:1px dashed #c9a94a;border-radius:4px;padding:6px 8px;font-family:Consolas,monospace;font-size:0.88em;color:#3d3d3d;user-select:text;word-break:break-all">{_h(path)}</div>'''
+    return f'''
+    <div class="why-box" style="margin-top:8px;background:#fffdf5;border:1px solid #f1d18a;border-left:4px solid #f39c12;border-radius:6px;padding:9px 11px;color:#5b4a1f;font-size:0.9em;line-height:1.45">
+      <div><strong>Por que isso é pendência:</strong> {_h(reason)}</div>
+      <div style="margin-top:5px"><strong>Como deveria estar:</strong> {_h(expected)}</div>
+      <div style="margin-top:5px"><strong>O que conferir agora:</strong> {_h(check)}</div>
+      {path_html}
+      {dup}
+    </div>'''
+
+
 def _render_item(item, folder, justifiable=False, context=None):
     st = item.get('status', 'info')
     icon = STATUS_ICON.get(st, '•')
@@ -72,11 +201,13 @@ def _render_item(item, folder, justifiable=False, context=None):
         context = context or {}
         storage_id = _issue_storage_id(folder, context.get('section', ''), context.get('person', ''), f'{label} {note}')
         iid = _iid(folder, f'{storage_id}|detail|{label}|{note}')
+        detail_html = _detail_box(label, section=context.get('section', ''), person=context.get('person', ''), note=note)
         return f'''
 <div id="row_{iid}" data-rowid="{iid}" data-justifiable="{storage_id}" style="display:flex;align-items:flex-start;gap:8px;margin:5px 0">
   <div style="flex:1">
     <span style="color:{color}">{icon} {label}{note_html}</span>
     <span id="badge_{iid}" style="display:none;margin-left:6px"></span>
+    {detail_html}
     <div id="panel_{iid}" style="display:none;margin-top:7px;background:#fff;border:1px solid #dce3ea;border-radius:6px;padding:10px 12px">
       <div id="display_{iid}" style="display:none;color:#555;font-size:0.88em;margin-bottom:6px;font-style:italic;border-left:3px solid #3498db;padding-left:8px"></div>
       <textarea id="note_{iid}" rows="2" placeholder="Descreva a justificativa ou tratativa…"
@@ -163,6 +294,7 @@ def _render_section(sec, folder):
 
 
 def _render_issues_section(all_issues, folder):
+    all_issues = _dedupe_issues(all_issues, folder)
     if not all_issues:
         return '''
   <div style="border:2px solid #27ae60;border-radius:8px;padding:14px 18px;background:#eafaf1;margin:16px 0;font-weight:600;color:#1e8449;font-size:1.05em">
@@ -176,11 +308,13 @@ def _render_issues_section(all_issues, folder):
         section, person, text = _parse_issue(msg)
         storage_id = _issue_storage_id(folder, section, person, text)
         iid = _iid(folder, f'{storage_id}|summary|{msg}')
+        detail_html = _detail_box(text or msg, section=section, person=person, note=issue.get('note', ''), duplicate_count=issue.get('duplicate_count', 1))
         items_html += f'''
 <div id="row_{iid}" data-rowid="{iid}" data-justifiable="{storage_id}" style="display:flex;align-items:flex-start;gap:8px;padding:6px 0;border-bottom:1px solid #fad7d7">
   <div style="flex:1">
     <span style="color:#c0392b">❌ {msg}</span>
     <span id="badge_{iid}" style="display:none;margin-left:6px"></span>
+    {detail_html}
     <div id="panel_{iid}" style="display:none;margin-top:7px;background:#fff;border:1px solid #dce3ea;border-radius:6px;padding:10px 12px">
       <div id="display_{iid}" style="display:none;color:#555;font-size:0.88em;margin-bottom:6px;font-style:italic;border-left:3px solid #3498db;padding-left:8px"></div>
       <textarea id="note_{iid}" rows="2" placeholder="Descreva a justificativa ou tratativa…"
@@ -221,7 +355,9 @@ def generate_report(audit_result, output_dir=None):
     folder = audit_result.get('folder_path', '')
     timestamp = audit_result.get('timestamp', '')
     overall = audit_result.get('overall_status', 'ok')
-    all_issues = audit_result.get('all_issues', [])
+    all_issues = _dedupe_issues(audit_result.get('all_issues', []), folder)
+    if not all_issues:
+        overall = 'ok'
 
     overall_color = STATUS_COLOR.get(overall, '#333')
     overall_icon = STATUS_ICON.get(overall, '•')

@@ -312,7 +312,17 @@ def listar_tarefas(filtro="TODAS", busca="", categoria="Todas"):
             FROM tarefas t
             LEFT JOIN tarefas_categorias c ON c.id = t.categoria_id
             WHERE {' AND '.join(where)}
-            ORDER BY t.status, t.ordem, t.id
+            ORDER BY
+                t.status,
+                CASE t.prioridade
+                    WHEN 'URGENTE' THEN 0
+                    WHEN 'ALTA' THEN 1
+                    WHEN 'MEDIA' THEN 2
+                    WHEN 'BAIXA' THEN 3
+                    ELSE 4
+                END,
+                t.ordem,
+                t.id
             """,
             params,
         )

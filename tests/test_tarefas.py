@@ -48,6 +48,23 @@ def test_mover_tarefa_conclui_e_permite_reabrir(monkeypatch, tmp_path):
     assert reaberta["concluida_em"] is None
 
 
+def test_listar_tarefas_ordena_prioridade_maior_primeiro(monkeypatch, tmp_path):
+    _preparar_banco(monkeypatch, tmp_path)
+
+    criar_tarefa("Prioridade baixa", prioridade="BAIXA")
+    criar_tarefa("Prioridade urgente", prioridade="URGENTE")
+    criar_tarefa("Prioridade alta", prioridade="ALTA")
+    criar_tarefa("Prioridade media", prioridade="MEDIA")
+
+    titulos = [tarefa["titulo"] for tarefa in listar_tarefas("A_FAZER")]
+    assert titulos == [
+        "Prioridade urgente",
+        "Prioridade alta",
+        "Prioridade media",
+        "Prioridade baixa",
+    ]
+
+
 def test_prazo_e_busca(monkeypatch, tmp_path):
     _preparar_banco(monkeypatch, tmp_path)
     ontem = (date.today() - timedelta(days=1)).strftime("%d/%m/%Y")
