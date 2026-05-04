@@ -15,7 +15,7 @@ import socket
 from calendar import monthrange
 from datetime import datetime, timedelta
 import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, messagebox, simpledialog, ttk
 
 import customtkinter as ctk
 import fitz
@@ -113,6 +113,42 @@ from src.sync import (
     importar_configuracoes_repo_se_existir,
     _listar_documentos_alterados_para_sync,
 )
+from src.seguros import (
+    STATUS_SEGURO,
+    adicionar_seguro,
+    inativar_seguro,
+    listar_controle_competencia,
+    resumo_competencia,
+    atualizar_status_seguro,
+    atualizar_observacao_seguro,
+)
+from src.tarefas import (
+    STATUS_TAREFA,
+    STATUS_LABELS as TAREFA_STATUS_LABELS,
+    PRIORIDADE_LABELS as TAREFA_PRIORIDADE_LABELS,
+    adicionar_categoria,
+    classificar_prazo,
+    criar_tarefa,
+    excluir_tarefa,
+    formatar_prazo_br,
+    listar_categorias,
+    listar_tarefas,
+    mover_tarefa,
+    resumo_tarefas,
+    atualizar_tarefa,
+)
+from src.operacional_sync import (
+    exportar_estado_operacional,
+    importar_estado_operacional_se_existir,
+)
+from src.backup import (
+    criar_backup_automatico_se_necessario,
+    criar_backup_local,
+    listar_backups,
+    restaurar_backup,
+)
+from src.busca_global import buscar_global
+from src.auditoria_consistencia import auditar_consistencia
 from src.cache import doc_cache
 from src.logger import get_logger as _get_logger
 
@@ -1512,6 +1548,380 @@ def exportar_configuracoes_repo_silencioso():
         _logger.warning("Falha ao exportar configurações manuais do repositório: %s", exc, exc_info=True)
 
 
+def importar_estado_operacional_inicial():
+    try:
+        resumo = importar_estado_operacional_se_existir()
+        if resumo:
+            _logger.info("Estado operacional do repositório importado: %s", resumo)
+    except Exception as exc:
+        _logger.warning("Falha ao importar estado operacional do repositório: %s", exc, exc_info=True)
+
+
+def exportar_estado_operacional_silencioso():
+    try:
+        resumo = exportar_estado_operacional()
+        _logger.info("Estado operacional do repositório exportado: %s", resumo)
+    except Exception as exc:
+        _logger.warning("Falha ao exportar estado operacional do repositório: %s", exc, exc_info=True)
+
+
+def criar_backup_automatico_silencioso(acionado_por="automatico", forcar=False):
+    try:
+        exportar_configuracoes_repo()
+        exportar_estado_operacional()
+        if forcar:
+            resultado = criar_backup_local(acionado_por=acionado_por)
+        else:
+            resultado = criar_backup_automatico_se_necessario(acionado_por=acionado_por)
+        _logger.info("Backup local: %s", resultado)
+        return resultado
+    except Exception as exc:
+        _logger.warning("Falha ao criar backup local: %s", exc, exc_info=True)
+        return None
+
+
+def criar_backup_manual_ui():
+    resultado = criar_backup_automatico_silencioso("manual", forcar=True)
+    if not resultado:
+        messagebox.showerror("Backup", "Não foi possível criar o backup agora. Veja os logs do sistema.")
+        return
+    messagebox.showinfo(
+        "Backup criado",
+        "Backup local criado com sucesso.\n\n"
+        f"Pasta: {resultado.get('pasta')}\n"
+        f"Arquivos salvos: {resultado.get('arquivos')}",
+    )
+    _recriar_tela_hoje()
+
+
+def _caminho_log_principal():
+    return os.path.join(_cfg.APP_DATA_DIR, "faturamento.log")
+
+
+def _ler_ultimas_linhas(caminho, limite=160):
+    if not caminho or not os.path.exists(caminho):
+        return []
+    try:
+        with open(caminho, "r", encoding="utf-8", errors="replace") as f:
+            linhas = f.readlines()
+        return [linha.rstrip("\n") for linha in linhas[-int(limite):]]
+    except OSError:
+        return []
+
+
+def _abrir_pasta_no_explorer(caminho):
+    try:
+        if not caminho:
+            return
+        os.makedirs(caminho, exist_ok=True)
+        os.startfile(caminho)
+    except Exception as exc:
+        messagebox.showerror("Abrir pasta", str(exc))
+
+
+def _abrir_dialogo_logs():
+    dialog = ctk.CTkToplevel(app)
+    dialog.title("Logs e erros do sistema")
+    centralizar_janela(dialog, 920, 620)
+    dialog.grab_set()
+
+    frame = ctk.CTkFrame(dialog, fg_color=UI_THEME["app_bg"])
+    frame.pack(fill="both", expand=True, padx=14, pady=14)
+    frame.grid_columnconfigure(0, weight=1)
+    frame.grid_rowconfigure(1, weight=1)
+
+    topo = ctk.CTkFrame(frame, fg_color="transparent")
+    topo.grid(row=0, column=0, sticky="ew", pady=(0, 10))
+    topo.grid_columnconfigure(0, weight=1)
+    ctk.CTkLabel(
+        topo,
+        text="Ultimos registros do sistema",
+        font=ctk.CTkFont(family="Segoe UI", size=18, weight="bold"),
+        text_color=UI_THEME["text_primary"],
+    ).grid(row=0, column=0, sticky="w")
+
+    texto = ctk.CTkTextbox(frame, corner_radius=12, font=ctk.CTkFont(family="Consolas", size=11))
+    texto.grid(row=1, column=0, sticky="nsew")
+
+    def _carregar():
+        caminhos = [
+            ("Sistema", _caminho_log_principal()),
+            ("Auditoria", os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs", "medicao_audit.log")),
+            ("Diagnostico", os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs", "medicao_diagnostico.txt")),
+        ]
+        blocos = []
+        for titulo, caminho in caminhos:
+            linhas = _ler_ultimas_linhas(caminho, 120)
+            blocos.append(f"===== {titulo}: {caminho} =====")
+            blocos.extend(linhas if linhas else ["Sem registros encontrados."])
+            blocos.append("")
+        texto.configure(state="normal")
+        texto.delete("1.0", "end")
+        texto.insert("1.0", "\n".join(blocos))
+        texto.configure(state="disabled")
+
+    botoes = ctk.CTkFrame(frame, fg_color="transparent")
+    botoes.grid(row=2, column=0, sticky="ew", pady=(10, 0))
+    botoes.grid_columnconfigure((0, 1, 2), weight=1)
+    ctk.CTkButton(botoes, text="Atualizar", height=34, command=_carregar).grid(row=0, column=0, sticky="ew", padx=(0, 5))
+    ctk.CTkButton(
+        botoes,
+        text="Abrir pasta de logs",
+        height=34,
+        fg_color=UI_THEME["surface_alt"],
+        hover_color=UI_THEME["tab_hover"],
+        border_width=1,
+        border_color=UI_THEME["border"],
+        text_color=UI_THEME["text_primary"],
+        command=lambda: _abrir_pasta_no_explorer(_cfg.APP_DATA_DIR),
+    ).grid(row=0, column=1, sticky="ew", padx=5)
+    ctk.CTkButton(
+        botoes,
+        text="Fechar",
+        height=34,
+        fg_color=UI_THEME["surface_alt"],
+        hover_color=UI_THEME["tab_hover"],
+        border_width=1,
+        border_color=UI_THEME["border"],
+        text_color=UI_THEME["text_primary"],
+        command=dialog.destroy,
+    ).grid(row=0, column=2, sticky="ew", padx=(5, 0))
+    _carregar()
+
+
+def _abrir_dialogo_busca_global():
+    dialog = ctk.CTkToplevel(app)
+    dialog.title("Busca Global")
+    centralizar_janela(dialog, 860, 620)
+    dialog.grab_set()
+
+    frame = ctk.CTkFrame(dialog, fg_color=UI_THEME["app_bg"])
+    frame.pack(fill="both", expand=True, padx=16, pady=16)
+    frame.grid_columnconfigure(0, weight=1)
+    frame.grid_rowconfigure(2, weight=1)
+
+    ctk.CTkLabel(
+        frame,
+        text="Busca Global",
+        font=ctk.CTkFont(family="Segoe UI", size=21, weight="bold"),
+        text_color=UI_THEME["text_primary"],
+    ).grid(row=0, column=0, sticky="w")
+    ctk.CTkLabel(
+        frame,
+        text="Procure NF, CTE, tarefas, seguros e alteracoes manuais em um lugar so.",
+        font=ctk.CTkFont(family="Segoe UI", size=11),
+        text_color=UI_THEME["text_secondary"],
+    ).grid(row=1, column=0, sticky="w", pady=(2, 10))
+
+    topo = ctk.CTkFrame(frame, fg_color="transparent")
+    topo.grid(row=0, column=1, rowspan=2, sticky="e")
+    termo_entry = ctk.CTkEntry(topo, width=260, height=36, placeholder_text="Digite ao menos 2 caracteres")
+    termo_entry.pack(side="left", padx=(0, 8))
+
+    lista = ctk.CTkScrollableFrame(frame, fg_color="transparent")
+    lista.grid(row=2, column=0, columnspan=2, sticky="nsew")
+
+    def _destino_por_origem(origem):
+        return {
+            "documentos": "relatorios",
+            "tarefas": "tarefas",
+            "seguros": "seguros",
+            "alteracoes": "alteracoes",
+        }.get(origem, "dashboard")
+
+    def _renderizar(resultados, termo):
+        for widget in lista.winfo_children():
+            widget.destroy()
+        if not termo or len(termo.strip()) < 2:
+            msg = "Digite ao menos 2 caracteres para pesquisar."
+        elif not resultados:
+            msg = "Nenhum resultado encontrado."
+        else:
+            msg = ""
+        if msg:
+            ctk.CTkLabel(lista, text=msg, font=ctk.CTkFont(family="Segoe UI", size=12), text_color=UI_THEME["text_secondary"]).pack(anchor="w", padx=8, pady=12)
+            return
+        for item in resultados:
+            origem = item.get("origem")
+            row = ctk.CTkFrame(lista, fg_color=UI_THEME["surface_alt"], corner_radius=13, border_width=1, border_color=UI_THEME["border"])
+            row.pack(fill="x", padx=4, pady=5)
+            row.grid_columnconfigure(1, weight=1)
+            ctk.CTkLabel(row, text=item.get("tipo") or "-", fg_color=UI_THEME["accent"], corner_radius=10, text_color=UI_THEME["on_accent"], width=82, font=ctk.CTkFont(family="Segoe UI", size=10, weight="bold")).grid(row=0, column=0, rowspan=2, padx=10, pady=10)
+            ctk.CTkLabel(row, text=item.get("titulo") or "-", font=ctk.CTkFont(family="Segoe UI", size=13, weight="bold"), text_color=UI_THEME["text_primary"], anchor="w").grid(row=0, column=1, sticky="ew", pady=(10, 1))
+            ctk.CTkLabel(row, text=item.get("detalhe") or "-", font=ctk.CTkFont(family="Segoe UI", size=10), text_color=UI_THEME["text_secondary"], anchor="w").grid(row=1, column=1, sticky="ew", pady=(0, 10))
+            ctk.CTkButton(
+                row,
+                text="Abrir",
+                width=70,
+                height=30,
+                fg_color=UI_THEME["surface"],
+                hover_color=UI_THEME["tab_hover"],
+                border_width=1,
+                border_color=UI_THEME["border"],
+                text_color=UI_THEME["text_primary"],
+                command=lambda d=_destino_por_origem(origem): (dialog.destroy(), app.mostrar_tela(d)),
+            ).grid(row=0, column=2, rowspan=2, padx=10, pady=10)
+
+    def _buscar(_event=None):
+        termo = termo_entry.get().strip()
+        try:
+            resultados = buscar_global(termo)
+        except Exception as exc:
+            messagebox.showerror("Busca Global", str(exc))
+            return
+        _renderizar(resultados, termo)
+
+    ctk.CTkButton(topo, text="Buscar", width=90, height=36, fg_color=UI_THEME["accent"], hover_color=UI_THEME["accent_hover"], command=_buscar).pack(side="left")
+    termo_entry.bind("<Return>", _buscar)
+    termo_entry.focus_set()
+    _renderizar([], "")
+
+
+def _abrir_dialogo_auditoria_consistencia():
+    dialog = ctk.CTkToplevel(app)
+    dialog.title("Auditoria de Consistencia")
+    centralizar_janela(dialog, 960, 680)
+    dialog.grab_set()
+
+    frame = ctk.CTkFrame(dialog, fg_color=UI_THEME["app_bg"])
+    frame.pack(fill="both", expand=True, padx=16, pady=16)
+    frame.grid_columnconfigure(0, weight=1)
+    frame.grid_rowconfigure(2, weight=1)
+
+    ctk.CTkLabel(frame, text="Auditoria de Consistencia", font=ctk.CTkFont(family="Segoe UI", size=21, weight="bold"), text_color=UI_THEME["text_primary"]).grid(row=0, column=0, sticky="w")
+    ctk.CTkLabel(frame, text="Verifica dados suspeitos antes de exportar ou analisar relatorios.", font=ctk.CTkFont(family="Segoe UI", size=11), text_color=UI_THEME["text_secondary"]).grid(row=1, column=0, sticky="w", pady=(2, 10))
+
+    lista = ctk.CTkScrollableFrame(frame, fg_color="transparent")
+    lista.grid(row=2, column=0, sticky="nsew")
+
+    def _cor_severidade(sev):
+        return {"alta": "#D85B6A", "media": "#E0A422", "baixa": "#2F80D0"}.get(str(sev), "#65758B")
+
+    def _renderizar():
+        for widget in lista.winfo_children():
+            widget.destroy()
+        try:
+            resultado = auditar_consistencia()
+        except Exception as exc:
+            messagebox.showerror("Auditoria de Consistencia", str(exc))
+            return
+        resumo = resultado.get("resumo", {})
+        resumo_card = _criar_card(lista, corner_radius=15)
+        resumo_card.pack(fill="x", padx=4, pady=(0, 8))
+        resumo_card.grid_columnconfigure((0, 1, 2, 3), weight=1)
+        for idx, (titulo, chave, cor) in enumerate((("Total", "total", UI_THEME["text_primary"]), ("Alta", "alta", "#D85B6A"), ("Media", "media", "#E0A422"), ("Baixa", "baixa", "#2F80D0"))):
+            ctk.CTkLabel(resumo_card, text=titulo, font=ctk.CTkFont(family="Segoe UI", size=10, weight="bold"), text_color=UI_THEME["text_secondary"]).grid(row=0, column=idx, pady=(12, 0))
+            ctk.CTkLabel(resumo_card, text=str(resumo.get(chave, 0)), font=ctk.CTkFont(family="Segoe UI", size=24, weight="bold"), text_color=cor).grid(row=1, column=idx, pady=(0, 12))
+        problemas = resultado.get("problemas", [])
+        if not problemas:
+            ctk.CTkLabel(lista, text="Nenhum problema encontrado nessa auditoria rapida.", font=ctk.CTkFont(family="Segoe UI", size=13, weight="bold"), text_color="#1FAE66").pack(anchor="w", padx=8, pady=12)
+            return
+        for item in problemas[:120]:
+            cor = _cor_severidade(item.get("severidade"))
+            row = ctk.CTkFrame(lista, fg_color=UI_THEME["surface_alt"], corner_radius=13, border_width=1, border_color=UI_THEME["border"])
+            row.pack(fill="x", padx=4, pady=5)
+            row.grid_columnconfigure(1, weight=1)
+            ctk.CTkLabel(row, text=str(item.get("severidade") or "-").upper(), fg_color=cor, corner_radius=10, text_color="#FFFFFF", width=70, font=ctk.CTkFont(family="Segoe UI", size=10, weight="bold")).grid(row=0, column=0, rowspan=3, padx=10, pady=10)
+            ctk.CTkLabel(row, text=f"{item.get('titulo')} | {item.get('documento')}", font=ctk.CTkFont(family="Segoe UI", size=13, weight="bold"), text_color=UI_THEME["text_primary"], anchor="w").grid(row=0, column=1, sticky="ew", pady=(9, 0))
+            ctk.CTkLabel(row, text=item.get("detalhe") or "-", font=ctk.CTkFont(family="Segoe UI", size=10), text_color=UI_THEME["text_secondary"], anchor="w").grid(row=1, column=1, sticky="ew", pady=(1, 0))
+            ctk.CTkLabel(row, text=item.get("sugestao") or "-", font=ctk.CTkFont(family="Segoe UI", size=10), text_color=UI_THEME["text_secondary"], anchor="w").grid(row=2, column=1, sticky="ew", pady=(1, 9))
+
+    botoes = ctk.CTkFrame(frame, fg_color="transparent")
+    botoes.grid(row=3, column=0, sticky="ew", pady=(10, 0))
+    botoes.grid_columnconfigure((0, 1, 2), weight=1)
+    ctk.CTkButton(botoes, text="Atualizar auditoria", height=34, command=_renderizar).grid(row=0, column=0, sticky="ew", padx=(0, 5))
+    ctk.CTkButton(botoes, text="Abrir Alteracoes", height=34, fg_color=UI_THEME["surface_alt"], hover_color=UI_THEME["tab_hover"], border_width=1, border_color=UI_THEME["border"], text_color=UI_THEME["text_primary"], command=lambda: (dialog.destroy(), app.mostrar_tela("alteracoes"))).grid(row=0, column=1, sticky="ew", padx=5)
+    ctk.CTkButton(botoes, text="Fechar", height=34, fg_color=UI_THEME["surface_alt"], hover_color=UI_THEME["tab_hover"], border_width=1, border_color=UI_THEME["border"], text_color=UI_THEME["text_primary"], command=dialog.destroy).grid(row=0, column=2, sticky="ew", padx=(5, 0))
+    _renderizar()
+
+
+def _abrir_dialogo_restaurar_backup():
+    backups = listar_backups()
+    if not backups:
+        messagebox.showinfo("Restaurar backup", "Nenhum backup local encontrado.")
+        return
+
+    dialog = ctk.CTkToplevel(app)
+    dialog.title("Restaurar Backup")
+    centralizar_janela(dialog, 760, 560)
+    dialog.grab_set()
+
+    frame = ctk.CTkFrame(dialog, fg_color=UI_THEME["app_bg"])
+    frame.pack(fill="both", expand=True, padx=16, pady=16)
+    frame.grid_columnconfigure(0, weight=1)
+    frame.grid_rowconfigure(1, weight=1)
+
+    ctk.CTkLabel(
+        frame,
+        text="Restaurar backup",
+        font=ctk.CTkFont(family="Segoe UI", size=20, weight="bold"),
+        text_color=UI_THEME["text_primary"],
+    ).grid(row=0, column=0, sticky="w", pady=(0, 4))
+    ctk.CTkLabel(
+        frame,
+        text="A restauracao sobrescreve o banco e os arquivos de sincronizacao. Um backup de seguranca sera criado antes.",
+        font=ctk.CTkFont(family="Segoe UI", size=11),
+        text_color=UI_THEME["text_secondary"],
+    ).grid(row=0, column=0, sticky="w", pady=(30, 10))
+
+    lista = ctk.CTkScrollableFrame(frame, fg_color="transparent")
+    lista.grid(row=1, column=0, sticky="nsew", pady=(8, 10))
+    selecionado = {"pasta": backups[0]["pasta"]}
+
+    def _selecionar(pasta):
+        selecionado["pasta"] = pasta
+        for widget in lista.winfo_children():
+            try:
+                ativo = getattr(widget, "_backup_pasta", "") == pasta
+                widget.configure(border_color=UI_THEME["accent"] if ativo else UI_THEME["border"], border_width=2 if ativo else 1)
+            except Exception:
+                pass
+
+    for item in backups[:20]:
+        card = ctk.CTkFrame(lista, fg_color=UI_THEME["surface_alt"], corner_radius=13, border_width=1, border_color=UI_THEME["border"])
+        card._backup_pasta = item["pasta"]
+        card.pack(fill="x", padx=4, pady=5)
+        card.grid_columnconfigure(0, weight=1)
+        criado = str(item.get("criado_em") or "").replace("T", " ")
+        qtd = len(item.get("arquivos") or [])
+        ctk.CTkLabel(card, text=item.get("nome") or "Backup", font=ctk.CTkFont(family="Segoe UI", size=13, weight="bold"), text_color=UI_THEME["text_primary"]).grid(row=0, column=0, sticky="w", padx=12, pady=(10, 1))
+        ctk.CTkLabel(card, text=f"{criado} | {qtd} arquivo(s) | {item.get('acionado_por') or '-'}", font=ctk.CTkFont(family="Segoe UI", size=10), text_color=UI_THEME["text_secondary"]).grid(row=1, column=0, sticky="w", padx=12, pady=(0, 10))
+        ctk.CTkButton(card, text="Selecionar", width=86, height=30, command=lambda p=item["pasta"]: _selecionar(p)).grid(row=0, column=1, rowspan=2, padx=12, pady=10)
+    _selecionar(selecionado["pasta"])
+
+    def _restaurar():
+        texto = "RESTAURAR"
+        confirm = simpledialog.askstring(
+            "Confirmar restauracao",
+            f"Digite {texto} para confirmar.\n\nO app vai restaurar o backup selecionado e recomenda reiniciar em seguida.",
+            parent=dialog,
+        )
+        if str(confirm or "").strip().upper() != texto:
+            return
+        try:
+            resultado = restaurar_backup(selecionado["pasta"], criar_pre_restore=True)
+        except Exception as exc:
+            messagebox.showerror("Restaurar backup", str(exc))
+            return
+        _atualizar_cache_documentos_pos_alteracao()
+        atualizar_dashboard()
+        dialog.destroy()
+        messagebox.showinfo(
+            "Backup restaurado",
+            "Backup restaurado com sucesso.\n\n"
+            f"Arquivos restaurados: {len(resultado.get('restaurados') or [])}\n\n"
+            "Feche e abra o aplicativo para garantir que todas as telas recarreguem com o banco restaurado.",
+        )
+        _recriar_tela_hoje()
+
+    acoes = ctk.CTkFrame(frame, fg_color="transparent")
+    acoes.grid(row=2, column=0, sticky="ew")
+    acoes.grid_columnconfigure((0, 1, 2), weight=1)
+    ctk.CTkButton(acoes, text="Abrir pasta de backups", height=36, fg_color=UI_THEME["surface_alt"], hover_color=UI_THEME["tab_hover"], border_width=1, border_color=UI_THEME["border"], text_color=UI_THEME["text_primary"], command=lambda: _abrir_pasta_no_explorer(_cfg.BACKUP_DIR)).grid(row=0, column=0, sticky="ew", padx=(0, 6))
+    ctk.CTkButton(acoes, text="Restaurar selecionado", height=36, fg_color="#D85B6A", hover_color="#B94755", command=_restaurar).grid(row=0, column=1, sticky="ew", padx=6)
+    ctk.CTkButton(acoes, text="Cancelar", height=36, fg_color=UI_THEME["surface_alt"], hover_color=UI_THEME["tab_hover"], border_width=1, border_color=UI_THEME["border"], text_color=UI_THEME["text_primary"], command=dialog.destroy).grid(row=0, column=2, sticky="ew", padx=(6, 0))
+
+
 
 # ─── src/documentos.py ──────────────────────────────────────────────────────
 # _buscar_documento_existente_sync, salvar_documento, alterar_competencia_documento,
@@ -1861,6 +2271,8 @@ app.protocol("WM_DELETE_WINDOW", _encerrar_aplicacao)
 
 iniciar_banco()
 importar_configuracoes_repo_inicial()
+importar_estado_operacional_inicial()
+criar_backup_automatico_silencioso("inicializacao")
 carregar_pasta_saida_relatorios()
 carregar_ultimo_relatorio()
 inicializar_filtros_dashboard()
@@ -3361,8 +3773,11 @@ SCREEN_NAV_STYLES = {}
 action_buttons = []
 SCREEN_NAV_CATALOG = {
     "dashboard": "Dashboard",
+    "hoje": "Hoje",
     "relatorios": "Relatórios",
     "alteracoes": "Alterações",
+    "seguros": "Seguros",
+    "tarefas": "Tarefas",
     "configuracoes": "Configurações",
     "medicao": "Medição",
 }
@@ -3370,11 +3785,18 @@ SCREEN_NAV_DEFAULT_ORDER = list(SCREEN_NAV_CATALOG.keys())
 ACTION_HOST_SCREENS = ["relatorios", "alteracoes", "configuracoes"]
 SCREEN_ORDER_ATUAL = SCREEN_NAV_DEFAULT_ORDER.copy()
 ACTION_LAYOUT_ATUAL = {}
+seguros_mes_atual = datetime.now().month
+seguros_ano_atual = datetime.now().year
+seguros_filtro_status = "TODOS"
+tarefas_filtro_atual = "TODAS"
+tarefas_busca_atual = ""
+tarefas_categoria_atual = "Todas"
 
 # Registrar callbacks para src.documentos notificar mudanças na UI
 _register_doc_on_change(_atualizar_cache_documentos_pos_alteracao)
 _register_doc_on_change(atualizar_dashboard)
 _register_doc_on_change(exportar_configuracoes_repo_silencioso)
+_register_doc_on_change(lambda: criar_backup_automatico_silencioso("alteracao_documento"))
 
 
 def _safe_config(widget, **kwargs):
@@ -5062,8 +5484,11 @@ def _criar_navegacao_telas(parent):
     telas = [(sid, SCREEN_NAV_CATALOG.get(sid, sid.title())) for sid in SCREEN_ORDER_ATUAL]
     nav_icons = {
         "dashboard": "🏠",
+        "hoje": "☀",
         "relatorios": "📋",
         "alteracoes": "🛠",
+        "seguros": "🛡",
+        "tarefas": "☑",
         "configuracoes": "⚙",
         "medicao": "🔍",
     }
@@ -5467,6 +5892,7 @@ def _consultar_painel_alteracoes(limite=2):
             "MANUAIS": {"qtd": 0, "total": 0.0},
         },
         "listas": {"DELTA": [], "SPOT": [], "INTERCOMPANY": [], "CANCELADOS": []},
+        "historico": [],
     }
     conn = None
     try:
@@ -5535,6 +5961,18 @@ def _consultar_painel_alteracoes(limite=2):
         dados["listas"]["CANCELADOS"] = _buscar_lista(
             "COALESCE(cancelado_manual, 0)=1 OR UPPER(COALESCE(status, '')) LIKE '%CANCEL%'"
         )
+        try:
+            cursor.execute(
+                """
+                SELECT data_hora, acao, tipo, numero, numero_original, campo, valor_anterior, valor_novo
+                FROM historico_alteracoes
+                ORDER BY id DESC
+                LIMIT 6
+                """
+            )
+            dados["historico"] = [dict(row) for row in cursor.fetchall()]
+        except sqlite3.Error:
+            dados["historico"] = []
     except Exception as exc:
         _logger.warning("Falha ao consultar painel de alteracoes: %s", exc, exc_info=True)
     finally:
@@ -5560,6 +5998,47 @@ def _formatar_competencia_curta(valor):
 def _formatar_status_curto(valor):
     texto = str(valor or "").strip()
     return texto if texto else "-"
+
+
+def _desfazer_alteracao_painel(row, tipo_acao):
+    tipo = str(row.get("tipo") or "").upper().strip()
+    numero = row.get("numero")
+    try:
+        numero = int(numero)
+    except (TypeError, ValueError):
+        messagebox.showwarning("Desfazer alteração", "Não foi possível identificar o número do documento.")
+        return
+
+    if tipo not in {"NF", "CTE"}:
+        messagebox.showwarning("Desfazer alteração", "Tipo de documento inválido.")
+        return
+
+    if tipo_acao == "frete":
+        confirmar = messagebox.askyesno(
+            "Desfazer modalidade",
+            f"Deseja voltar {tipo} {row.get('numero_original') or numero} para FRANQUIA?",
+        )
+        if not confirmar:
+            return
+        resultado = salvar_alteracao_frete_manual(tipo, numero, "FRANQUIA")
+        if int(resultado.get("encontrados", 0) or 0) == 0:
+            messagebox.showwarning("Desfazer modalidade", "Documento não encontrado.")
+            return
+        messagebox.showinfo("Desfazer modalidade", "Modalidade revertida para FRANQUIA.")
+    elif tipo_acao == "cancelamento":
+        confirmar = messagebox.askyesno(
+            "Desfazer cancelamento",
+            f"Deseja restaurar {tipo} {row.get('numero_original') or numero}?",
+        )
+        if not confirmar:
+            return
+        alterados = desfazer_cancelamento_documento(tipo, numero)
+        if alterados == 0:
+            messagebox.showwarning("Desfazer cancelamento", "Documento não estava cancelado manualmente.")
+            return
+        messagebox.showinfo("Desfazer cancelamento", "Cancelamento desfeito com sucesso.")
+
+    _recriar_tela_alteracoes()
 
 
 def _criar_tela_alteracoes(parent):
@@ -5624,7 +6103,7 @@ def _criar_tela_alteracoes(parent):
     _card_resumo(2, "Intercompany", "INTERCOMPANY", "🏢", "#8C5DE8", lambda i: f"Total: {formatar_moeda_brl(i['total'])}")
     _card_resumo(3, "Revisões manuais", "MANUAIS", "🛠", "#E0A422", lambda _i: "Competência, frete ou cancelamento")
 
-    def _criar_tabela(parent_grid, linha_grid, coluna, titulo, subtitulo, linhas, cor):
+    def _criar_tabela(parent_grid, linha_grid, coluna, titulo, subtitulo, linhas, cor, desfazer_tipo=None):
         card_tabela = _criar_card(parent_grid, corner_radius=16)
         card_tabela.grid(row=linha_grid, column=coluna, sticky="nsew", padx=(0 if coluna == 0 else 6, 0 if coluna == 1 else 6), pady=(0, 12))
         cab = ctk.CTkFrame(card_tabela, fg_color="transparent")
@@ -5647,9 +6126,10 @@ def _criar_tela_alteracoes(parent):
 
         grid = ctk.CTkFrame(card_tabela, fg_color="transparent")
         grid.pack(fill="x", padx=14, pady=(0, 14))
-        for idx, peso in enumerate((2, 1, 1, 1)):
+        pesos = (2, 1, 1, 1, 1) if desfazer_tipo else (2, 1, 1, 1)
+        for idx, peso in enumerate(pesos):
             grid.grid_columnconfigure(idx, weight=peso)
-        headers = ("Documento", "Competência", "Valor", "Status")
+        headers = ("Documento", "Competência", "Valor", "Status", "") if desfazer_tipo else ("Documento", "Competência", "Valor", "Status")
         for idx, texto in enumerate(headers):
             ctk.CTkLabel(
                 grid,
@@ -5684,14 +6164,82 @@ def _criar_tela_alteracoes(parent):
                     text_color=UI_THEME["text_primary"] if col_idx == 0 else UI_THEME["text_secondary"],
                     anchor="w",
                 ).grid(row=row_idx, column=col_idx, sticky="ew", padx=(0 if col_idx == 0 else 8, 0), pady=3)
+            if desfazer_tipo:
+                ctk.CTkButton(
+                    grid,
+                    text="Desfazer",
+                    height=28,
+                    corner_radius=9,
+                    fg_color=UI_THEME["surface_alt"],
+                    hover_color=UI_THEME["tab_hover"],
+                    border_width=1,
+                    border_color=UI_THEME["border"],
+                    text_color=UI_THEME["text_primary"],
+                    font=ctk.CTkFont(family="Segoe UI", size=10, weight="bold"),
+                    command=lambda r=dict(row), t=desfazer_tipo: _desfazer_alteracao_painel(r, t),
+                ).grid(row=row_idx, column=4, sticky="ew", padx=(8, 0), pady=2)
 
     tabelas_grid = ctk.CTkFrame(tela, fg_color="transparent")
     tabelas_grid.pack(fill="x", padx=18, pady=(0, 0))
     tabelas_grid.grid_columnconfigure((0, 1), weight=1)
-    _criar_tabela(tabelas_grid, 0, 0, "Notas declaradas Delta", "Últimos documentos com frete revisado para Delta.", dados["listas"].get("DELTA", []), "#1AAE8F")
-    _criar_tabela(tabelas_grid, 0, 1, "Notas declaradas Spot", "Últimos documentos com frete revisado para Spot.", dados["listas"].get("SPOT", []), "#2386D1")
-    _criar_tabela(tabelas_grid, 1, 0, "Intercompany recentes", "Itens separados para acompanhamento interno.", dados["listas"].get("INTERCOMPANY", []), "#8C5DE8")
-    _criar_tabela(tabelas_grid, 1, 1, "Cancelamentos recentes", "Documentos marcados como cancelados ou zerados manualmente.", dados["listas"].get("CANCELADOS", []), "#D85B6A")
+    _criar_tabela(tabelas_grid, 0, 0, "Notas declaradas Delta", "Últimos documentos com frete revisado para Delta.", dados["listas"].get("DELTA", []), "#1AAE8F", "frete")
+    _criar_tabela(tabelas_grid, 0, 1, "Notas declaradas Spot", "Últimos documentos com frete revisado para Spot.", dados["listas"].get("SPOT", []), "#2386D1", "frete")
+    _criar_tabela(tabelas_grid, 1, 0, "Intercompany recentes", "Itens separados para acompanhamento interno.", dados["listas"].get("INTERCOMPANY", []), "#8C5DE8", "frete")
+    _criar_tabela(tabelas_grid, 1, 1, "Cancelamentos recentes", "Documentos marcados como cancelados ou zerados manualmente.", dados["listas"].get("CANCELADOS", []), "#D85B6A", "cancelamento")
+
+    historico_card = _criar_card(tela, corner_radius=18)
+    historico_card.pack(fill="x", padx=18, pady=(0, 12))
+    ctk.CTkLabel(
+        historico_card,
+        text="Histórico recente",
+        font=ctk.CTkFont(family="Segoe UI", size=16, weight="bold"),
+        text_color=UI_THEME["text_primary"],
+    ).pack(anchor="w", padx=18, pady=(12, 4))
+    ctk.CTkLabel(
+        historico_card,
+        text="Últimas alterações manuais registradas para conferência.",
+        font=ctk.CTkFont(family="Segoe UI", size=11),
+        text_color=UI_THEME["text_secondary"],
+    ).pack(anchor="w", padx=18, pady=(0, 10))
+    hist_grid = ctk.CTkFrame(historico_card, fg_color="transparent")
+    hist_grid.pack(fill="x", padx=18, pady=(0, 14))
+    for idx, peso in enumerate((1, 1, 1, 2, 2)):
+        hist_grid.grid_columnconfigure(idx, weight=peso)
+    for idx, texto in enumerate(("Data", "Ação", "Documento", "Antes", "Depois")):
+        ctk.CTkLabel(
+            hist_grid,
+            text=texto,
+            font=ctk.CTkFont(family="Segoe UI", size=10, weight="bold"),
+            text_color=UI_THEME["text_secondary"],
+            anchor="w",
+        ).grid(row=0, column=idx, sticky="ew", padx=(0 if idx == 0 else 8, 0), pady=(0, 6))
+    if not dados.get("historico"):
+        ctk.CTkLabel(
+            hist_grid,
+            text="Nenhuma alteração registrada ainda. As próximas ações aparecerão aqui.",
+            font=ctk.CTkFont(family="Segoe UI", size=12),
+            text_color=UI_THEME["text_secondary"],
+            anchor="w",
+        ).grid(row=1, column=0, columnspan=5, sticky="ew", pady=(4, 0))
+    else:
+        for row_idx, item in enumerate(dados["historico"], start=1):
+            data_txt = str(item.get("data_hora") or "")[5:16].replace("-", "/")
+            doc_txt = f"{item.get('tipo') or '-'} {item.get('numero_original') or item.get('numero') or '-'}"
+            valores = (
+                data_txt,
+                str(item.get("acao") or "").replace("_", " ").title(),
+                doc_txt,
+                str(item.get("valor_anterior") or "-"),
+                str(item.get("valor_novo") or "-"),
+            )
+            for col_idx, valor in enumerate(valores):
+                ctk.CTkLabel(
+                    hist_grid,
+                    text=valor,
+                    font=ctk.CTkFont(family="Segoe UI", size=11),
+                    text_color=UI_THEME["text_primary"] if col_idx == 2 else UI_THEME["text_secondary"],
+                    anchor="w",
+                ).grid(row=row_idx, column=col_idx, sticky="ew", padx=(0 if col_idx == 0 else 8, 0), pady=3)
 
     card = _criar_card(tela, corner_radius=20)
     card.pack(fill="x", padx=18, pady=(0, 16))
@@ -5745,6 +6293,977 @@ def _agendar_atualizacao_painel_alteracoes():
         app.after(0, _recriar_tela_alteracoes)
     except Exception:
         _recriar_tela_alteracoes()
+
+
+def _status_seguro_label(status):
+    status_norm = str(status or "PENDENTE").upper().strip()
+    return {
+        "PENDENTE": "Pendente",
+        "RECEBIDO": "Recebido",
+        "ENVIADO": "Enviado",
+    }.get(status_norm, "Pendente")
+
+
+def _status_seguro_cores(status):
+    status_norm = str(status or "PENDENTE").upper().strip()
+    if status_norm == "ENVIADO":
+        return "#1FAE66", "#DDF8E9"
+    if status_norm == "RECEBIDO":
+        return "#2F80D0", "#E6F2FF"
+    return "#E0A422", "#FFF4D9"
+
+
+def _recriar_tela_seguros():
+    try:
+        host = getattr(app, "screen_host", None)
+        if host is None or not host.winfo_exists():
+            return
+        tela_antiga = app.screens.get("seguros")
+        if tela_antiga is not None and tela_antiga.winfo_exists():
+            tela_antiga.destroy()
+        nova_tela = _criar_tela_seguros(host)
+        app.registrar_tela("seguros", nova_tela)
+        if getattr(app, "current_screen", "") == "seguros":
+            app.mostrar_tela("seguros")
+    except Exception as exc:
+        _logger.warning("Falha ao atualizar tela de seguros: %s", exc, exc_info=True)
+
+
+def _recriar_tela_hoje():
+    try:
+        host = getattr(app, "screen_host", None)
+        if host is None or not host.winfo_exists():
+            return
+        tela_antiga = app.screens.get("hoje")
+        if tela_antiga is not None and tela_antiga.winfo_exists():
+            tela_antiga.destroy()
+        nova_tela = _criar_tela_hoje(host)
+        app.registrar_tela("hoje", nova_tela)
+        if getattr(app, "current_screen", "") == "hoje":
+            app.mostrar_tela("hoje")
+    except Exception as exc:
+        _logger.warning("Falha ao atualizar tela Hoje: %s", exc, exc_info=True)
+
+
+def _persistir_e_recriar_seguros():
+    exportar_estado_operacional_silencioso()
+    criar_backup_automatico_silencioso("seguros")
+    _recriar_tela_hoje()
+    _recriar_tela_seguros()
+
+
+def _abrir_dialogo_adicionar_seguro():
+    dialog = ctk.CTkToplevel(app)
+    dialog.title("Adicionar Seguro")
+    centralizar_janela(dialog, 420, 190)
+    dialog.grab_set()
+
+    form = ctk.CTkFrame(dialog, fg_color="transparent")
+    form.pack(fill="both", expand=True, padx=18, pady=16)
+    ctk.CTkLabel(
+        form,
+        text="Nome do seguro",
+        font=ctk.CTkFont(family="Segoe UI", size=13, weight="bold"),
+    ).pack(anchor="w", pady=(0, 6))
+    nome_entry = ctk.CTkEntry(form, placeholder_text="Ex.: Fator, HDI", height=38)
+    nome_entry.pack(fill="x", pady=(0, 14))
+    nome_entry.focus_set()
+
+    def _salvar():
+        try:
+            adicionar_seguro(nome_entry.get())
+        except Exception as exc:
+            messagebox.showwarning("Adicionar Seguro", str(exc))
+            return
+        dialog.destroy()
+        _persistir_e_recriar_seguros()
+
+    ctk.CTkButton(
+        form,
+        text="Salvar seguro",
+        height=38,
+        corner_radius=11,
+        fg_color=UI_THEME["accent"],
+        hover_color=UI_THEME["accent_hover"],
+        command=_salvar,
+    ).pack(fill="x")
+    nome_entry.bind("<Return>", lambda _e: _salvar())
+
+
+def _abrir_dialogo_observacao_seguro(item):
+    dialog = ctk.CTkToplevel(app)
+    dialog.title("Observação do Seguro")
+    centralizar_janela(dialog, 540, 330)
+    dialog.grab_set()
+
+    form = ctk.CTkFrame(dialog, fg_color="transparent")
+    form.pack(fill="both", expand=True, padx=18, pady=16)
+    ctk.CTkLabel(
+        form,
+        text=f"Observação — {item.get('nome', 'Seguro')}",
+        font=ctk.CTkFont(family="Segoe UI", size=15, weight="bold"),
+        text_color=UI_THEME["text_primary"],
+    ).pack(anchor="w", pady=(0, 8))
+    texto = ctk.CTkTextbox(form, height=170, corner_radius=12)
+    texto.pack(fill="both", expand=True, pady=(0, 12))
+    texto.insert("1.0", str(item.get("observacao") or ""))
+
+    def _salvar():
+        obs = texto.get("1.0", "end").strip()
+        atualizar_observacao_seguro(item["seguro_id"], seguros_mes_atual, seguros_ano_atual, obs)
+        dialog.destroy()
+        _persistir_e_recriar_seguros()
+
+    ctk.CTkButton(
+        form,
+        text="Salvar observação",
+        height=38,
+        corner_radius=11,
+        fg_color=UI_THEME["accent"],
+        hover_color=UI_THEME["accent_hover"],
+        command=_salvar,
+    ).pack(fill="x")
+
+
+def _definir_status_seguro_ui(seguro_id, status):
+    atualizar_status_seguro(seguro_id, seguros_mes_atual, seguros_ano_atual, status)
+    _persistir_e_recriar_seguros()
+
+
+def _inativar_seguro_ui(item):
+    if not messagebox.askyesno(
+        "Inativar Seguro",
+        f"Deseja inativar o seguro {item.get('nome')}?\n\nEle não aparecerá em novas competências, mas o histórico registrado será mantido.",
+    ):
+        return
+    inativar_seguro(item["seguro_id"])
+    _persistir_e_recriar_seguros()
+
+
+def _criar_tela_seguros(parent):
+    global seguros_mes_atual, seguros_ano_atual, seguros_filtro_status
+
+    tela = ctk.CTkFrame(parent, fg_color=UI_THEME["app_bg"])
+    registros = listar_controle_competencia(seguros_mes_atual, seguros_ano_atual, seguros_filtro_status)
+    resumo = resumo_competencia(seguros_mes_atual, seguros_ano_atual)
+
+    header = ctk.CTkFrame(tela, fg_color="transparent")
+    header.pack(fill="x", padx=18, pady=(0, 12))
+    header.grid_columnconfigure(0, weight=1)
+    ctk.CTkLabel(
+        header,
+        text="Controle de Seguros",
+        font=ctk.CTkFont(family="Segoe UI", size=24, weight="bold"),
+        text_color=UI_THEME["text_primary"],
+    ).grid(row=0, column=0, sticky="w")
+    ctk.CTkLabel(
+        header,
+        text="Acompanhe comprovantes pendentes, recebidos e enviados por competência.",
+        font=ctk.CTkFont(family="Segoe UI", size=12),
+        text_color=UI_THEME["text_secondary"],
+    ).grid(row=1, column=0, sticky="w", pady=(4, 0))
+    ctk.CTkButton(
+        header,
+        text="➕ Adicionar Seguro",
+        height=40,
+        corner_radius=12,
+        fg_color=UI_THEME["accent"],
+        hover_color=UI_THEME["accent_hover"],
+        font=ctk.CTkFont(family="Segoe UI", size=12, weight="bold"),
+        command=_abrir_dialogo_adicionar_seguro,
+    ).grid(row=0, column=1, rowspan=2, sticky="e", padx=(12, 0))
+
+    filtros_card = _criar_card(tela, corner_radius=18)
+    filtros_card.pack(fill="x", padx=18, pady=(0, 12))
+    filtros_card.grid_columnconfigure((0, 1, 2, 3, 4, 5), weight=1)
+    ctk.CTkLabel(
+        filtros_card,
+        text="Competência",
+        font=ctk.CTkFont(family="Segoe UI", size=14, weight="bold"),
+        text_color=UI_THEME["text_primary"],
+    ).grid(row=0, column=0, sticky="w", padx=16, pady=(14, 6))
+
+    mes_combo = ctk.CTkComboBox(filtros_card, values=[m.capitalize() for m in MESES], height=36)
+    mes_combo.set(MESES[seguros_mes_atual - 1].capitalize())
+    mes_combo.grid(row=1, column=0, columnspan=2, sticky="ew", padx=(16, 8), pady=(0, 14))
+
+    anos = [str(ano) for ano in range(datetime.now().year - 2, datetime.now().year + 5)]
+    ano_combo = ctk.CTkComboBox(filtros_card, values=anos, height=36)
+    ano_combo.set(str(seguros_ano_atual))
+    ano_combo.grid(row=1, column=2, sticky="ew", padx=(0, 8), pady=(0, 14))
+
+    def _aplicar_competencia(_event=None):
+        global seguros_mes_atual, seguros_ano_atual
+        mes_nome = mes_combo.get().strip().lower()
+        if mes_nome in MESES:
+            seguros_mes_atual = MESES.index(mes_nome) + 1
+        try:
+            seguros_ano_atual = int(ano_combo.get())
+        except ValueError:
+            seguros_ano_atual = datetime.now().year
+        _recriar_tela_seguros()
+
+    ctk.CTkButton(
+        filtros_card,
+        text="Aplicar",
+        height=36,
+        corner_radius=10,
+        fg_color=UI_THEME["surface_alt"],
+        hover_color=UI_THEME["tab_hover"],
+        border_width=1,
+        border_color=UI_THEME["border"],
+        text_color=UI_THEME["text_primary"],
+        command=_aplicar_competencia,
+    ).grid(row=1, column=3, sticky="ew", padx=(0, 8), pady=(0, 14))
+    mes_combo.configure(command=_aplicar_competencia)
+    ano_combo.configure(command=_aplicar_competencia)
+
+    resumo_grid = ctk.CTkFrame(tela, fg_color="transparent")
+    resumo_grid.pack(fill="x", padx=18, pady=(0, 12))
+    resumo_grid.grid_columnconfigure((0, 1, 2, 3), weight=1)
+
+    def _card_resumo(col, titulo, valor, cor, icone):
+        card = _criar_card(resumo_grid, corner_radius=16)
+        card.grid(row=0, column=col, sticky="nsew", padx=(0 if col == 0 else 6, 0 if col == 3 else 6))
+        _criar_badge_icone(card, icone, cor=cor, tamanho=36).pack(anchor="w", padx=14, pady=(14, 6))
+        ctk.CTkLabel(card, text=titulo, font=ctk.CTkFont(family="Segoe UI", size=11, weight="bold"), text_color=UI_THEME["text_secondary"]).pack(anchor="w", padx=14)
+        ctk.CTkLabel(card, text=str(valor), font=ctk.CTkFont(family="Segoe UI", size=28, weight="bold"), text_color=UI_THEME["text_primary"]).pack(anchor="w", padx=14, pady=(0, 12))
+
+    _card_resumo(0, "Total cadastrados", resumo["total"], "#65758B", "▦")
+    _card_resumo(1, "Pendentes", resumo["pendente"], "#E0A422", "!")
+    _card_resumo(2, "Recebidos", resumo["recebido"], "#2F80D0", "↓")
+    _card_resumo(3, "Enviados", resumo["enviado"], "#1FAE66", "✓")
+
+    filtro_card = _criar_card(tela, corner_radius=18)
+    filtro_card.pack(fill="x", padx=18, pady=(0, 12))
+    filtro_row = ctk.CTkFrame(filtro_card, fg_color="transparent")
+    filtro_row.pack(fill="x", padx=14, pady=12)
+    opcoes = [("TODOS", "Todos"), ("PENDENTE", "Pendentes"), ("RECEBIDO", "Recebidos"), ("ENVIADO", "Enviados")]
+    filtro_row.grid_columnconfigure(tuple(range(len(opcoes))), weight=1)
+
+    def _set_filtro(status):
+        global seguros_filtro_status
+        seguros_filtro_status = status
+        _recriar_tela_seguros()
+
+    for idx, (status, label) in enumerate(opcoes):
+        ativo = seguros_filtro_status == status
+        ctk.CTkButton(
+            filtro_row,
+            text=label,
+            height=34,
+            corner_radius=10,
+            fg_color=UI_THEME["accent"] if ativo else UI_THEME["surface_alt"],
+            hover_color=UI_THEME["accent_hover"] if ativo else UI_THEME["tab_hover"],
+            text_color=UI_THEME["on_accent"] if ativo else UI_THEME["text_primary"],
+            border_width=1,
+            border_color=UI_THEME["cta_border"] if ativo else UI_THEME["border"],
+            command=lambda s=status: _set_filtro(s),
+        ).grid(row=0, column=idx, sticky="ew", padx=5)
+
+    lista_card = _criar_card(tela, corner_radius=20)
+    lista_card.pack(fill="x", padx=18, pady=(0, 16))
+    ctk.CTkLabel(
+        lista_card,
+        text=f"Comprovantes — {MESES[seguros_mes_atual - 1].capitalize()}/{seguros_ano_atual}",
+        font=ctk.CTkFont(family="Segoe UI", size=18, weight="bold"),
+        text_color=UI_THEME["text_primary"],
+    ).pack(anchor="w", padx=18, pady=(14, 8))
+
+    if not registros:
+        ctk.CTkLabel(
+            lista_card,
+            text="Nenhum seguro para este filtro. Cadastre um seguro ou altere o filtro.",
+            font=ctk.CTkFont(family="Segoe UI", size=12),
+            text_color=UI_THEME["text_secondary"],
+        ).pack(anchor="w", padx=18, pady=(0, 16))
+        return tela
+
+    for item in registros:
+        status = str(item.get("status") or "PENDENTE").upper()
+        cor, _ = _status_seguro_cores(status)
+        row = ctk.CTkFrame(lista_card, fg_color=UI_THEME["surface_alt"], corner_radius=14, border_width=1, border_color=UI_THEME["border"])
+        row.pack(fill="x", padx=16, pady=6)
+        row.grid_columnconfigure(0, weight=2)
+        row.grid_columnconfigure(1, weight=1)
+        row.grid_columnconfigure(2, weight=3)
+
+        nome = item.get("nome") or "Seguro"
+        nome_txt = f"{nome}" if int(item.get("ativo") or 0) == 1 else f"{nome} (inativo)"
+        ctk.CTkLabel(row, text=nome_txt, font=ctk.CTkFont(family="Segoe UI", size=14, weight="bold"), text_color=UI_THEME["text_primary"], anchor="w").grid(row=0, column=0, sticky="w", padx=14, pady=(12, 2))
+        ctk.CTkLabel(row, text=_status_seguro_label(status), font=ctk.CTkFont(family="Segoe UI", size=11, weight="bold"), fg_color=cor, corner_radius=12, text_color="#FFFFFF", width=86).grid(row=0, column=1, sticky="w", padx=8, pady=(12, 2))
+
+        obs = str(item.get("observacao") or "").strip()
+        obs_txt = obs if obs else "Sem observação."
+        ctk.CTkLabel(row, text=obs_txt, font=ctk.CTkFont(family="Segoe UI", size=11), text_color=UI_THEME["text_secondary"], anchor="w").grid(row=1, column=0, columnspan=2, sticky="ew", padx=14, pady=(0, 12))
+
+        acoes = ctk.CTkFrame(row, fg_color="transparent")
+        acoes.grid(row=0, column=2, rowspan=2, sticky="e", padx=12, pady=10)
+        for status_btn, label in (("PENDENTE", "Pendente"), ("RECEBIDO", "Recebido"), ("ENVIADO", "Enviado")):
+            bcor, _ = _status_seguro_cores(status_btn)
+            ctk.CTkButton(
+                acoes,
+                text=label,
+                width=82,
+                height=30,
+                corner_radius=9,
+                fg_color=bcor if status == status_btn else UI_THEME["surface"],
+                hover_color=bcor,
+                text_color="#FFFFFF" if status == status_btn else UI_THEME["text_primary"],
+                border_width=1,
+                border_color=bcor,
+                font=ctk.CTkFont(family="Segoe UI", size=10, weight="bold"),
+                command=lambda sid=item["seguro_id"], st=status_btn: _definir_status_seguro_ui(sid, st),
+            ).pack(side="left", padx=3)
+        ctk.CTkButton(
+            acoes,
+            text="Obs.",
+            width=58,
+            height=30,
+            corner_radius=9,
+            fg_color=UI_THEME["surface_alt"],
+            hover_color=UI_THEME["tab_hover"],
+            border_width=1,
+            border_color=UI_THEME["border"],
+            text_color=UI_THEME["text_primary"],
+            command=lambda i=dict(item): _abrir_dialogo_observacao_seguro(i),
+        ).pack(side="left", padx=3)
+        if int(item.get("ativo") or 0) == 1:
+            ctk.CTkButton(
+                acoes,
+                text="Inativar",
+                width=70,
+                height=30,
+                corner_radius=9,
+                fg_color=UI_THEME["surface_alt"],
+                hover_color=UI_THEME["danger_bg"],
+                border_width=1,
+                border_color=UI_THEME["border"],
+                text_color=UI_THEME["text_primary"],
+                command=lambda i=dict(item): _inativar_seguro_ui(i),
+            ).pack(side="left", padx=3)
+
+    return tela
+
+
+def _prioridade_tarefa_cor(prioridade):
+    prioridade = str(prioridade or "MEDIA").upper()
+    return {
+        "BAIXA": "#64748B",
+        "MEDIA": "#2F80D0",
+        "ALTA": "#E0A422",
+        "URGENTE": "#D85B6A",
+    }.get(prioridade, "#2F80D0")
+
+
+def _prazo_tarefa_cor(tarefa):
+    classe = classificar_prazo(tarefa.get("prazo"), tarefa.get("status"))
+    if classe == "atrasada":
+        return "#D85B6A"
+    if classe == "hoje":
+        return "#E0A422"
+    if classe == "concluido":
+        return "#1FAE66"
+    return UI_THEME["text_secondary"]
+
+
+def _recriar_tela_tarefas():
+    try:
+        host = getattr(app, "screen_host", None)
+        if host is None or not host.winfo_exists():
+            return
+        tela_antiga = app.screens.get("tarefas")
+        if tela_antiga is not None and tela_antiga.winfo_exists():
+            tela_antiga.destroy()
+        nova_tela = _criar_tela_tarefas(host)
+        app.registrar_tela("tarefas", nova_tela)
+        if getattr(app, "current_screen", "") == "tarefas":
+            app.mostrar_tela("tarefas")
+    except Exception as exc:
+        _logger.warning("Falha ao atualizar tela de tarefas: %s", exc, exc_info=True)
+
+
+def _persistir_e_recriar_tarefas():
+    exportar_estado_operacional_silencioso()
+    criar_backup_automatico_silencioso("tarefas")
+    _recriar_tela_hoje()
+    _recriar_tela_tarefas()
+
+
+def _abrir_dialogo_categoria_tarefa():
+    dialog = ctk.CTkToplevel(app)
+    dialog.title("Nova categoria")
+    centralizar_janela(dialog, 380, 170)
+    dialog.grab_set()
+    frame = ctk.CTkFrame(dialog, fg_color="transparent")
+    frame.pack(fill="both", expand=True, padx=16, pady=14)
+    ctk.CTkLabel(frame, text="Nome da categoria", font=ctk.CTkFont(family="Segoe UI", size=13, weight="bold")).pack(anchor="w", pady=(0, 6))
+    entry = ctk.CTkEntry(frame, height=36, placeholder_text="Ex.: Financeiro")
+    entry.pack(fill="x", pady=(0, 12))
+
+    def _salvar():
+        try:
+            adicionar_categoria(entry.get())
+        except Exception as exc:
+            messagebox.showwarning("Categoria", str(exc))
+            return
+        dialog.destroy()
+        _persistir_e_recriar_tarefas()
+
+    ctk.CTkButton(frame, text="Salvar categoria", height=36, command=_salvar).pack(fill="x")
+    entry.focus_set()
+    entry.bind("<Return>", lambda _e: _salvar())
+
+
+def _abrir_dialogo_tarefa(tarefa=None):
+    editando = bool(tarefa)
+    dialog = ctk.CTkToplevel(app)
+    dialog.title("Editar Tarefa" if editando else "Nova Tarefa")
+    centralizar_janela(dialog, 720, 620)
+    dialog.grab_set()
+
+    frame = ctk.CTkFrame(dialog, fg_color="transparent")
+    frame.pack(fill="both", expand=True, padx=18, pady=16)
+    frame.grid_columnconfigure((0, 1), weight=1)
+
+    def _label(txt, row, col):
+        ctk.CTkLabel(frame, text=txt, font=ctk.CTkFont(family="Segoe UI", size=12, weight="bold")).grid(row=row, column=col, sticky="w", padx=6, pady=(0, 4))
+
+    _label("Título", 0, 0)
+    titulo = ctk.CTkEntry(frame, height=36)
+    titulo.grid(row=1, column=0, columnspan=2, sticky="ew", padx=6, pady=(0, 10))
+    titulo.insert(0, tarefa.get("titulo", "") if tarefa else "")
+
+    _label("Descrição/observação", 2, 0)
+    descricao = ctk.CTkTextbox(frame, height=115, corner_radius=10)
+    descricao.grid(row=3, column=0, columnspan=2, sticky="ew", padx=6, pady=(0, 10))
+    descricao.insert("1.0", tarefa.get("descricao", "") if tarefa else "")
+
+    categorias = [c["nome"] for c in listar_categorias()]
+    _label("Projeto/categoria", 4, 0)
+    categoria = ctk.CTkComboBox(frame, values=categorias or ["Outros"], height=36)
+    categoria.set(tarefa.get("categoria", "Outros") if tarefa else "Outros")
+    categoria.grid(row=5, column=0, sticky="ew", padx=6, pady=(0, 10))
+
+    _label("Responsável", 4, 1)
+    responsavel = ctk.CTkEntry(frame, height=36, placeholder_text="Ex.: Ismael, Financeiro")
+    responsavel.grid(row=5, column=1, sticky="ew", padx=6, pady=(0, 10))
+    responsavel.insert(0, tarefa.get("responsavel", "") if tarefa else "")
+
+    _label("Prazo (dd/mm/aaaa)", 6, 0)
+    prazo = ctk.CTkEntry(frame, height=36, placeholder_text="Sem prazo")
+    prazo.grid(row=7, column=0, sticky="ew", padx=6, pady=(0, 10))
+    prazo_val = formatar_prazo_br(tarefa.get("prazo", "")) if tarefa else ""
+    prazo.insert(0, "" if prazo_val == "Sem prazo" else prazo_val)
+
+    _label("Tags", 6, 1)
+    tags = ctk.CTkEntry(frame, height=36, placeholder_text="Ex.: mensal, cliente")
+    tags.grid(row=7, column=1, sticky="ew", padx=6, pady=(0, 10))
+    tags.insert(0, tarefa.get("tags", "") if tarefa else "")
+
+    prioridade_map = {v: k for k, v in TAREFA_PRIORIDADE_LABELS.items()}
+    status_map = {v: k for k, v in TAREFA_STATUS_LABELS.items()}
+    _label("Prioridade", 8, 0)
+    prioridade = ctk.CTkComboBox(frame, values=list(prioridade_map.keys()), height=36)
+    prioridade.set(TAREFA_PRIORIDADE_LABELS.get(tarefa.get("prioridade", "MEDIA"), "Média") if tarefa else "Média")
+    prioridade.grid(row=9, column=0, sticky="ew", padx=6, pady=(0, 12))
+
+    _label("Status", 8, 1)
+    status = ctk.CTkComboBox(frame, values=list(status_map.keys()), height=36)
+    status.set(TAREFA_STATUS_LABELS.get(tarefa.get("status", "A_FAZER"), "A Fazer") if tarefa else "A Fazer")
+    status.grid(row=9, column=1, sticky="ew", padx=6, pady=(0, 12))
+
+    actions = ctk.CTkFrame(frame, fg_color="transparent")
+    actions.grid(row=10, column=0, columnspan=2, sticky="ew", padx=6, pady=(4, 0))
+    actions.grid_columnconfigure((0, 1, 2), weight=1)
+
+    def _salvar():
+        try:
+            dados = {
+                "titulo": titulo.get(),
+                "descricao": descricao.get("1.0", "end").strip(),
+                "categoria": categoria.get(),
+                "responsavel": responsavel.get(),
+                "prazo": prazo.get(),
+                "prioridade": prioridade_map.get(prioridade.get(), "MEDIA"),
+                "status": status_map.get(status.get(), "A_FAZER"),
+                "tags": tags.get(),
+            }
+            if editando:
+                atualizar_tarefa(tarefa["id"], **dados)
+            else:
+                criar_tarefa(**dados)
+        except Exception as exc:
+            messagebox.showwarning("Tarefa", str(exc))
+            return
+        dialog.destroy()
+        _persistir_e_recriar_tarefas()
+
+    ctk.CTkButton(actions, text="Salvar", height=38, fg_color=UI_THEME["accent"], hover_color=UI_THEME["accent_hover"], command=_salvar).grid(row=0, column=0, sticky="ew", padx=(0, 6))
+    ctk.CTkButton(actions, text="Nova categoria", height=38, fg_color=UI_THEME["surface_alt"], hover_color=UI_THEME["tab_hover"], border_width=1, border_color=UI_THEME["border"], text_color=UI_THEME["text_primary"], command=_abrir_dialogo_categoria_tarefa).grid(row=0, column=1, sticky="ew", padx=6)
+    if editando:
+        def _excluir():
+            if messagebox.askyesno("Excluir tarefa", "Deseja excluir esta tarefa?"):
+                excluir_tarefa(tarefa["id"])
+                dialog.destroy()
+                _persistir_e_recriar_tarefas()
+        ctk.CTkButton(actions, text="Excluir", height=38, fg_color="#D85B6A", hover_color="#B94755", command=_excluir).grid(row=0, column=2, sticky="ew", padx=(6, 0))
+
+
+def _mover_tarefa_ui(tarefa_id, status):
+    mover_tarefa(tarefa_id, status)
+    _persistir_e_recriar_tarefas()
+
+
+def _criar_tela_hoje(parent):
+    tela = ctk.CTkFrame(parent, fg_color=UI_THEME["app_bg"])
+
+    hoje = datetime.now()
+    tarefas_atrasadas = listar_tarefas("ATRASADAS")
+    tarefas_hoje = listar_tarefas("HOJE")
+    tarefas_urgentes = listar_tarefas("URGENTES")
+    seguros_pendentes = listar_controle_competencia(hoje.month, hoje.year, "PENDENTE")
+    alteracoes = _consultar_painel_alteracoes(limite=2)
+    total_manuais = alteracoes.get("contadores", {}).get("MANUAIS", {}).get("qtd", 0)
+    backups = listar_backups(limite=3)
+    ultimo_bkp = backups[0] if backups else None
+
+    header = ctk.CTkFrame(tela, fg_color="transparent")
+    header.pack(fill="x", padx=18, pady=(0, 12))
+    header.grid_columnconfigure(0, weight=1)
+    ctk.CTkLabel(
+        header,
+        text="Hoje",
+        font=ctk.CTkFont(family="Segoe UI", size=24, weight="bold"),
+        text_color=UI_THEME["text_primary"],
+    ).grid(row=0, column=0, sticky="w")
+    ctk.CTkLabel(
+        header,
+        text="Um painel curto para ver atrasos, vencimentos, seguros e alteracoes recentes.",
+        font=ctk.CTkFont(family="Segoe UI", size=12),
+        text_color=UI_THEME["text_secondary"],
+    ).grid(row=1, column=0, sticky="w", pady=(4, 0))
+    ctk.CTkLabel(
+        header,
+        text=hoje.strftime("%d/%m/%Y"),
+        font=ctk.CTkFont(family="Segoe UI", size=13, weight="bold"),
+        text_color=UI_THEME["text_primary"],
+        fg_color=UI_THEME["surface_alt"],
+        corner_radius=12,
+        padx=14,
+        pady=8,
+    ).grid(row=0, column=1, rowspan=2, sticky="e", padx=(12, 0))
+
+    resumo_grid = ctk.CTkFrame(tela, fg_color="transparent")
+    resumo_grid.pack(fill="x", padx=18, pady=(0, 12))
+    resumo_grid.grid_columnconfigure((0, 1, 2, 3), weight=1)
+
+    def _resumo_card(col, titulo, valor, detalhe, cor, icone, destino):
+        card = _criar_card(resumo_grid, corner_radius=16)
+        card.grid(row=0, column=col, sticky="nsew", padx=(0 if col == 0 else 6, 0 if col == 3 else 6))
+        topo = ctk.CTkFrame(card, fg_color="transparent")
+        topo.pack(fill="x", padx=14, pady=(14, 6))
+        _criar_badge_icone(topo, icone, cor=cor, tamanho=38).pack(side="left")
+        ctk.CTkLabel(
+            topo,
+            text=str(valor),
+            font=ctk.CTkFont(family="Segoe UI", size=28, weight="bold"),
+            text_color=cor,
+        ).pack(side="right")
+        ctk.CTkLabel(
+            card,
+            text=titulo,
+            font=ctk.CTkFont(family="Segoe UI", size=12, weight="bold"),
+            text_color=UI_THEME["text_primary"],
+        ).pack(anchor="w", padx=14)
+        ctk.CTkLabel(
+            card,
+            text=detalhe,
+            font=ctk.CTkFont(family="Segoe UI", size=10),
+            text_color=UI_THEME["text_secondary"],
+        ).pack(anchor="w", padx=14, pady=(2, 12))
+        card.bind("<Button-1>", lambda _e, d=destino: app.mostrar_tela(d))
+        for child in card.winfo_children():
+            child.bind("<Button-1>", lambda _e, d=destino: app.mostrar_tela(d))
+
+    _resumo_card(0, "Tarefas atrasadas", len(tarefas_atrasadas), "Precisam de decisao ou replanejamento.", "#D85B6A", "!", "tarefas")
+    _resumo_card(1, "Vencem hoje", len(tarefas_hoje), "Prazo para resolver ainda hoje.", "#E0A422", "H", "tarefas")
+    _resumo_card(2, "Seguros pendentes", len(seguros_pendentes), f"{MESES[hoje.month - 1].capitalize()}/{hoje.year}", "#2F80D0", "S", "seguros")
+    _resumo_card(3, "Alteracoes manuais", total_manuais, "Delta, Spot, intercompany e cancelados.", "#1AAE8F", "A", "alteracoes")
+
+    central = _criar_card(tela, corner_radius=18)
+    central.pack(fill="x", padx=18, pady=(0, 12))
+    central.grid_columnconfigure(0, weight=1)
+    cab_alertas = ctk.CTkFrame(central, fg_color="transparent")
+    cab_alertas.grid(row=0, column=0, sticky="ew", padx=16, pady=(14, 8))
+    cab_alertas.grid_columnconfigure(0, weight=1)
+    ctk.CTkLabel(
+        cab_alertas,
+        text="Central de alertas",
+        font=ctk.CTkFont(family="Segoe UI", size=18, weight="bold"),
+        text_color=UI_THEME["text_primary"],
+    ).grid(row=0, column=0, sticky="w")
+    ctk.CTkButton(
+        cab_alertas,
+        text="Backup agora",
+        height=32,
+        corner_radius=10,
+        fg_color=UI_THEME["accent"],
+        hover_color=UI_THEME["accent_hover"],
+        font=ctk.CTkFont(family="Segoe UI", size=11, weight="bold"),
+        command=criar_backup_manual_ui,
+    ).grid(row=0, column=1, sticky="e", padx=(10, 0))
+    ctk.CTkButton(
+        cab_alertas,
+        text="Buscar",
+        height=32,
+        width=86,
+        corner_radius=10,
+        fg_color=UI_THEME["surface_alt"],
+        hover_color=UI_THEME["tab_hover"],
+        border_width=1,
+        border_color=UI_THEME["border"],
+        text_color=UI_THEME["text_primary"],
+        font=ctk.CTkFont(family="Segoe UI", size=11, weight="bold"),
+        command=_abrir_dialogo_busca_global,
+    ).grid(row=0, column=2, sticky="e", padx=(8, 0))
+    ctk.CTkButton(
+        cab_alertas,
+        text="Consistencia",
+        height=32,
+        width=118,
+        corner_radius=10,
+        fg_color=UI_THEME["surface_alt"],
+        hover_color=UI_THEME["tab_hover"],
+        border_width=1,
+        border_color=UI_THEME["border"],
+        text_color=UI_THEME["text_primary"],
+        font=ctk.CTkFont(family="Segoe UI", size=11, weight="bold"),
+        command=_abrir_dialogo_auditoria_consistencia,
+    ).grid(row=0, column=3, sticky="e", padx=(8, 0))
+
+    def _abrir_pasta_backup():
+        alvo = ultimo_bkp.get("pasta") if ultimo_bkp else getattr(_cfg, "BACKUP_DIR", "")
+        if alvo:
+            os.makedirs(alvo, exist_ok=True)
+            os.startfile(alvo)
+
+    if ultimo_bkp:
+        data_bkp = str(ultimo_bkp.get("criado_em") or "").replace("T", " ")
+        backup_txt = f"Ultimo backup: {data_bkp}"
+    else:
+        backup_txt = "Nenhum backup local registrado ainda."
+
+    alertas = []
+    if tarefas_atrasadas:
+        alertas.append(("critico", f"{len(tarefas_atrasadas)} tarefa(s) atrasada(s)", "Abrir Tarefas", "tarefas"))
+    if tarefas_hoje:
+        alertas.append(("atencao", f"{len(tarefas_hoje)} tarefa(s) vencem hoje", "Abrir Tarefas", "tarefas"))
+    if seguros_pendentes:
+        alertas.append(("atencao", f"{len(seguros_pendentes)} seguro(s) pendente(s) nesta competencia", "Abrir Seguros", "seguros"))
+    if not ultimo_bkp:
+        alertas.append(("info", "Backup local ainda nao foi criado", "Backup agora", "backup"))
+    if not alertas:
+        alertas.append(("ok", "Sem alertas importantes agora. O painel esta limpo.", "Atualizar", "hoje"))
+
+    cores_alerta = {"critico": "#D85B6A", "atencao": "#E0A422", "info": "#2F80D0", "ok": "#1FAE66"}
+    for row_idx, (nivel, texto, acao, destino) in enumerate(alertas, start=1):
+        linha = ctk.CTkFrame(central, fg_color=UI_THEME["surface_alt"], corner_radius=12, border_width=1, border_color=UI_THEME["border"])
+        linha.grid(row=row_idx, column=0, sticky="ew", padx=14, pady=4)
+        linha.grid_columnconfigure(1, weight=1)
+        ctk.CTkLabel(
+            linha,
+            text="!",
+            fg_color=cores_alerta.get(nivel, "#2F80D0"),
+            corner_radius=10,
+            text_color="#FFFFFF",
+            font=ctk.CTkFont(family="Segoe UI", size=11, weight="bold"),
+            width=28,
+        ).grid(row=0, column=0, padx=(10, 8), pady=9)
+        ctk.CTkLabel(
+            linha,
+            text=texto,
+            font=ctk.CTkFont(family="Segoe UI", size=12, weight="bold"),
+            text_color=UI_THEME["text_primary"],
+            anchor="w",
+        ).grid(row=0, column=1, sticky="ew", pady=9)
+        comando = criar_backup_manual_ui if destino == "backup" else (lambda d=destino: app.mostrar_tela(d))
+        ctk.CTkButton(
+            linha,
+            text=acao,
+            width=104,
+            height=28,
+            corner_radius=9,
+            fg_color=UI_THEME["surface"],
+            hover_color=UI_THEME["tab_hover"],
+            border_width=1,
+            border_color=UI_THEME["border"],
+            text_color=UI_THEME["text_primary"],
+            font=ctk.CTkFont(family="Segoe UI", size=10, weight="bold"),
+            command=comando,
+        ).grid(row=0, column=2, padx=10, pady=8)
+
+    rodape_backup = ctk.CTkFrame(central, fg_color="transparent")
+    rodape_backup.grid(row=len(alertas) + 1, column=0, sticky="ew", padx=16, pady=(8, 14))
+    rodape_backup.grid_columnconfigure(0, weight=1)
+    ctk.CTkLabel(
+        rodape_backup,
+        text=backup_txt,
+        font=ctk.CTkFont(family="Segoe UI", size=10),
+        text_color=UI_THEME["text_secondary"],
+    ).grid(row=0, column=0, sticky="w")
+    ctk.CTkButton(
+        rodape_backup,
+        text="Abrir backup",
+        height=28,
+        width=96,
+        corner_radius=9,
+        fg_color=UI_THEME["surface_alt"],
+        hover_color=UI_THEME["tab_hover"],
+        border_width=1,
+        border_color=UI_THEME["border"],
+        text_color=UI_THEME["text_primary"],
+        font=ctk.CTkFont(family="Segoe UI", size=10, weight="bold"),
+        command=_abrir_pasta_backup,
+    ).grid(row=0, column=1, sticky="e", padx=(8, 0))
+    ctk.CTkButton(
+        rodape_backup,
+        text="Restaurar",
+        height=28,
+        width=92,
+        corner_radius=9,
+        fg_color=UI_THEME["surface_alt"],
+        hover_color=UI_THEME["tab_hover"],
+        border_width=1,
+        border_color=UI_THEME["border"],
+        text_color=UI_THEME["text_primary"],
+        font=ctk.CTkFont(family="Segoe UI", size=10, weight="bold"),
+        command=_abrir_dialogo_restaurar_backup,
+    ).grid(row=0, column=2, sticky="e", padx=(8, 0))
+    ctk.CTkButton(
+        rodape_backup,
+        text="Ver logs",
+        height=28,
+        width=82,
+        corner_radius=9,
+        fg_color=UI_THEME["surface_alt"],
+        hover_color=UI_THEME["tab_hover"],
+        border_width=1,
+        border_color=UI_THEME["border"],
+        text_color=UI_THEME["text_primary"],
+        font=ctk.CTkFont(family="Segoe UI", size=10, weight="bold"),
+        command=_abrir_dialogo_logs,
+    ).grid(row=0, column=3, sticky="e", padx=(8, 0))
+
+    corpo = ctk.CTkFrame(tela, fg_color="transparent")
+    corpo.pack(fill="x", padx=18, pady=(0, 16))
+    corpo.grid_columnconfigure((0, 1), weight=1)
+
+    def _lista_card(row, col, titulo, subtitulo, itens, vazio, tipo, destino):
+        card = _criar_card(corpo, corner_radius=18)
+        card.grid(row=row, column=col, sticky="nsew", padx=(0 if col == 0 else 6, 0 if col == 1 else 6), pady=6)
+        card.grid_columnconfigure(0, weight=1)
+        head = ctk.CTkFrame(card, fg_color="transparent")
+        head.pack(fill="x", padx=14, pady=(14, 6))
+        ctk.CTkLabel(
+            head,
+            text=titulo,
+            font=ctk.CTkFont(family="Segoe UI", size=16, weight="bold"),
+            text_color=UI_THEME["text_primary"],
+        ).pack(side="left")
+        ctk.CTkButton(
+            head,
+            text="Abrir",
+            width=64,
+            height=28,
+            corner_radius=9,
+            fg_color=UI_THEME["surface_alt"],
+            hover_color=UI_THEME["tab_hover"],
+            border_width=1,
+            border_color=UI_THEME["border"],
+            text_color=UI_THEME["text_primary"],
+            font=ctk.CTkFont(family="Segoe UI", size=10, weight="bold"),
+            command=lambda d=destino: app.mostrar_tela(d),
+        ).pack(side="right")
+        ctk.CTkLabel(
+            card,
+            text=subtitulo,
+            font=ctk.CTkFont(family="Segoe UI", size=10),
+            text_color=UI_THEME["text_secondary"],
+        ).pack(anchor="w", padx=14, pady=(0, 8))
+        if not itens:
+            ctk.CTkLabel(
+                card,
+                text=vazio,
+                font=ctk.CTkFont(family="Segoe UI", size=12),
+                text_color=UI_THEME["text_secondary"],
+            ).pack(anchor="w", padx=14, pady=(8, 16))
+            return
+        for item in itens[:4]:
+            linha = ctk.CTkFrame(card, fg_color=UI_THEME["surface_alt"], corner_radius=12, border_width=1, border_color=UI_THEME["border"])
+            linha.pack(fill="x", padx=12, pady=4)
+            if tipo == "seguro":
+                nome = item.get("nome") or "Seguro"
+                detalhe = str(item.get("observacao") or "").strip() or "Sem observacao."
+                destaque = "Pendente"
+                cor = "#E0A422"
+            elif tipo == "alteracao":
+                nome = _formatar_doc_curto(item)
+                detalhe = f"{_formatar_competencia_curta(item.get('competencia'))} | {_formatar_status_curto(item.get('status'))}"
+                destaque = str(item.get("frete") or "Manual")
+                cor = "#1AAE8F"
+            else:
+                nome = item.get("titulo") or "Tarefa"
+                detalhe = f"{item.get('categoria') or 'Sem categoria'} | {item.get('responsavel') or 'Sem responsavel'} | {formatar_prazo_br(item.get('prazo'))}"
+                destaque = TAREFA_PRIORIDADE_LABELS.get(str(item.get("prioridade") or "MEDIA").upper(), "Media")
+                cor = _prioridade_tarefa_cor(item.get("prioridade"))
+            linha.grid_columnconfigure(0, weight=1)
+            ctk.CTkLabel(
+                linha,
+                text=nome,
+                font=ctk.CTkFont(family="Segoe UI", size=12, weight="bold"),
+                text_color=UI_THEME["text_primary"],
+                anchor="w",
+            ).grid(row=0, column=0, sticky="ew", padx=10, pady=(8, 0))
+            ctk.CTkLabel(
+                linha,
+                text=detalhe,
+                font=ctk.CTkFont(family="Segoe UI", size=10),
+                text_color=UI_THEME["text_secondary"],
+                anchor="w",
+            ).grid(row=1, column=0, sticky="ew", padx=10, pady=(1, 8))
+            ctk.CTkLabel(
+                linha,
+                text=destaque,
+                fg_color=cor,
+                corner_radius=10,
+                text_color="#FFFFFF",
+                font=ctk.CTkFont(family="Segoe UI", size=10, weight="bold"),
+                width=74,
+            ).grid(row=0, column=1, rowspan=2, sticky="e", padx=10, pady=8)
+
+    _lista_card(0, 0, "Tarefas atrasadas", "Itens que passaram do prazo e ainda nao foram concluidos.", tarefas_atrasadas, "Nada atrasado por aqui.", "tarefa", "tarefas")
+    _lista_card(0, 1, "Vencendo hoje", "O que merece prioridade no dia.", tarefas_hoje, "Nenhuma tarefa vence hoje.", "tarefa", "tarefas")
+    _lista_card(1, 0, "Urgentes", "Prioridade alta do quadro Kanban.", tarefas_urgentes, "Nenhuma tarefa urgente cadastrada.", "tarefa", "tarefas")
+    _lista_card(1, 1, "Seguros pendentes", "Comprovantes ainda pendentes na competencia atual.", seguros_pendentes, "Nenhum seguro pendente nesta competencia.", "seguro", "seguros")
+
+    recentes = []
+    for modalidade in ("DELTA", "SPOT", "INTERCOMPANY", "CANCELADOS"):
+        recentes.extend(alteracoes.get("listas", {}).get(modalidade, [])[:1])
+    if recentes:
+        _lista_card(2, 0, "Alteracoes recentes", "Ultimos documentos marcados manualmente.", recentes[:4], "", "alteracao", "alteracoes")
+
+    return tela
+
+
+def _criar_tela_tarefas(parent):
+    global tarefas_filtro_atual, tarefas_busca_atual, tarefas_categoria_atual
+    tela = ctk.CTkFrame(parent, fg_color=UI_THEME["app_bg"])
+
+    header = ctk.CTkFrame(tela, fg_color="transparent")
+    header.pack(fill="x", padx=18, pady=(0, 12))
+    header.grid_columnconfigure(0, weight=1)
+    ctk.CTkLabel(header, text="Tarefas", font=ctk.CTkFont(family="Segoe UI", size=24, weight="bold"), text_color=UI_THEME["text_primary"]).grid(row=0, column=0, sticky="w")
+    ctk.CTkLabel(header, text="Quadro Kanban para organizar afazeres, responsáveis, prioridades e prazos.", font=ctk.CTkFont(family="Segoe UI", size=12), text_color=UI_THEME["text_secondary"]).grid(row=1, column=0, sticky="w", pady=(4, 0))
+    ctk.CTkButton(header, text="➕ Nova Tarefa", height=40, corner_radius=12, fg_color=UI_THEME["accent"], hover_color=UI_THEME["accent_hover"], font=ctk.CTkFont(family="Segoe UI", size=12, weight="bold"), command=lambda: _abrir_dialogo_tarefa()).grid(row=0, column=1, rowspan=2, sticky="e", padx=(12, 0))
+
+    resumo = resumo_tarefas()
+    resumo_grid = ctk.CTkFrame(tela, fg_color="transparent")
+    resumo_grid.pack(fill="x", padx=18, pady=(0, 12))
+    resumo_grid.grid_columnconfigure(tuple(range(7)), weight=1)
+    cards = [
+        ("Total", resumo["total"], "#65758B"),
+        ("A fazer", resumo["a_fazer"], "#2F80D0"),
+        ("Andamento", resumo["em_andamento"], "#1AAE8F"),
+        ("Aguardando", resumo["aguardando"], "#E0A422"),
+        ("Concluídas", resumo["concluido"], "#1FAE66"),
+        ("Urgentes", resumo["urgentes"], "#D85B6A"),
+        ("Atrasadas", resumo["atrasadas"], "#B94755"),
+    ]
+    for idx, (titulo, valor, cor) in enumerate(cards):
+        card = _criar_card(resumo_grid, corner_radius=14)
+        card.grid(row=0, column=idx, sticky="nsew", padx=4)
+        ctk.CTkLabel(card, text=titulo, font=ctk.CTkFont(family="Segoe UI", size=10, weight="bold"), text_color=UI_THEME["text_secondary"]).pack(anchor="w", padx=10, pady=(10, 2))
+        ctk.CTkLabel(card, text=str(valor), font=ctk.CTkFont(family="Segoe UI", size=22, weight="bold"), text_color=cor).pack(anchor="w", padx=10, pady=(0, 10))
+
+    filtro_card = _criar_card(tela, corner_radius=18)
+    filtro_card.pack(fill="x", padx=18, pady=(0, 12))
+    filtro_card.grid_columnconfigure((0, 1, 2), weight=1)
+    busca = ctk.CTkEntry(filtro_card, height=36, placeholder_text="Buscar por título, descrição, responsável, categoria...")
+    busca.insert(0, tarefas_busca_atual)
+    busca.grid(row=0, column=0, sticky="ew", padx=(14, 8), pady=12)
+    categorias = ["Todas"] + [c["nome"] for c in listar_categorias()]
+    cat_combo = ctk.CTkComboBox(filtro_card, values=categorias, height=36)
+    cat_combo.set(tarefas_categoria_atual if tarefas_categoria_atual in categorias else "Todas")
+    cat_combo.grid(row=0, column=1, sticky="ew", padx=(0, 8), pady=12)
+
+    def _aplicar_busca(_event=None):
+        global tarefas_busca_atual, tarefas_categoria_atual
+        tarefas_busca_atual = busca.get().strip()
+        tarefas_categoria_atual = cat_combo.get().strip() or "Todas"
+        _recriar_tela_tarefas()
+
+    ctk.CTkButton(filtro_card, text="Aplicar filtros", height=36, fg_color=UI_THEME["surface_alt"], hover_color=UI_THEME["tab_hover"], border_width=1, border_color=UI_THEME["border"], text_color=UI_THEME["text_primary"], command=_aplicar_busca).grid(row=0, column=2, sticky="ew", padx=(0, 14), pady=12)
+    busca.bind("<Return>", _aplicar_busca)
+    cat_combo.configure(command=lambda _v: _aplicar_busca())
+
+    filtros = [
+        ("TODAS", "Todas"), ("A_FAZER", "A Fazer"), ("EM_ANDAMENTO", "Em andamento"),
+        ("AGUARDANDO", "Aguardando"), ("CONCLUIDO", "Concluídas"), ("URGENTES", "Urgentes"),
+        ("ATRASADAS", "Atrasadas"), ("HOJE", "Vencendo hoje"),
+    ]
+    filtros_row = ctk.CTkFrame(tela, fg_color="transparent")
+    filtros_row.pack(fill="x", padx=18, pady=(0, 12))
+    filtros_row.grid_columnconfigure(tuple(range(len(filtros))), weight=1)
+    def _set_filtro(filtro):
+        global tarefas_filtro_atual
+        tarefas_filtro_atual = filtro
+        _recriar_tela_tarefas()
+    for idx, (filtro, label) in enumerate(filtros):
+        ativo = tarefas_filtro_atual == filtro
+        ctk.CTkButton(filtros_row, text=label, height=32, corner_radius=10, fg_color=UI_THEME["accent"] if ativo else UI_THEME["surface_alt"], hover_color=UI_THEME["accent_hover"] if ativo else UI_THEME["tab_hover"], text_color=UI_THEME["on_accent"] if ativo else UI_THEME["text_primary"], border_width=1, border_color=UI_THEME["cta_border"] if ativo else UI_THEME["border"], font=ctk.CTkFont(family="Segoe UI", size=10, weight="bold"), command=lambda f=filtro: _set_filtro(f)).grid(row=0, column=idx, sticky="ew", padx=3)
+
+    tarefas = listar_tarefas(tarefas_filtro_atual, tarefas_busca_atual, tarefas_categoria_atual)
+    por_status = {status: [] for status in STATUS_TAREFA}
+    for tarefa in tarefas:
+        por_status.setdefault(tarefa.get("status"), []).append(tarefa)
+
+    board = ctk.CTkFrame(tela, fg_color="transparent")
+    board.pack(fill="x", padx=18, pady=(0, 16))
+    board.grid_columnconfigure((0, 1, 2, 3), weight=1, uniform="kanban")
+
+    for col_idx, status in enumerate(STATUS_TAREFA):
+        coluna = _criar_card(board, corner_radius=18)
+        coluna.grid(row=0, column=col_idx, sticky="nsew", padx=5)
+        ctk.CTkLabel(coluna, text=f"{TAREFA_STATUS_LABELS[status]} ({len(por_status.get(status, []))})", font=ctk.CTkFont(family="Segoe UI", size=14, weight="bold"), text_color=UI_THEME["text_primary"]).pack(anchor="w", padx=12, pady=(12, 8))
+        lista = ctk.CTkScrollableFrame(coluna, height=430, fg_color="transparent")
+        lista.pack(fill="both", expand=True, padx=8, pady=(0, 10))
+        if not por_status.get(status):
+            ctk.CTkLabel(lista, text="Sem tarefas.", font=ctk.CTkFont(family="Segoe UI", size=11), text_color=UI_THEME["text_secondary"]).pack(anchor="w", padx=8, pady=8)
+        for tarefa in por_status.get(status, []):
+            _criar_card_tarefa(lista, tarefa)
+    return tela
+
+
+def _criar_card_tarefa(parent, tarefa):
+    prioridade = str(tarefa.get("prioridade") or "MEDIA").upper()
+    cor_prio = _prioridade_tarefa_cor(prioridade)
+    card = ctk.CTkFrame(parent, fg_color=UI_THEME["surface_alt"], corner_radius=14, border_width=1, border_color=cor_prio)
+    card.pack(fill="x", padx=4, pady=6)
+    card.bind("<Button-1>", lambda _e, t=dict(tarefa): _abrir_dialogo_tarefa(t))
+    titulo = str(tarefa.get("titulo") or "Sem título")
+    ctk.CTkLabel(card, text=titulo, wraplength=210, justify="left", font=ctk.CTkFont(family="Segoe UI", size=13, weight="bold"), text_color=UI_THEME["text_primary"], anchor="w").pack(fill="x", padx=10, pady=(10, 4))
+    meta = f"{tarefa.get('categoria') or 'Sem categoria'} • {tarefa.get('responsavel') or 'Sem responsável'}"
+    ctk.CTkLabel(card, text=meta, wraplength=210, justify="left", font=ctk.CTkFont(family="Segoe UI", size=10), text_color=UI_THEME["text_secondary"], anchor="w").pack(fill="x", padx=10)
+    row = ctk.CTkFrame(card, fg_color="transparent")
+    row.pack(fill="x", padx=10, pady=(8, 6))
+    ctk.CTkLabel(row, text=TAREFA_PRIORIDADE_LABELS.get(prioridade, "Média"), fg_color=cor_prio, corner_radius=10, text_color="#FFFFFF", font=ctk.CTkFont(family="Segoe UI", size=10, weight="bold"), width=64).pack(side="left")
+    ctk.CTkLabel(row, text=formatar_prazo_br(tarefa.get("prazo")), text_color=_prazo_tarefa_cor(tarefa), font=ctk.CTkFont(family="Segoe UI", size=10, weight="bold")).pack(side="right")
+    mover = ctk.CTkFrame(card, fg_color="transparent")
+    mover.pack(fill="x", padx=8, pady=(0, 8))
+    outros = [s for s in STATUS_TAREFA if s != tarefa.get("status")]
+    for status in outros[:3]:
+        ctk.CTkButton(mover, text=TAREFA_STATUS_LABELS[status].split()[0], height=24, width=58, corner_radius=8, fg_color=UI_THEME["surface"], hover_color=UI_THEME["tab_hover"], border_width=1, border_color=UI_THEME["border"], text_color=UI_THEME["text_primary"], font=ctk.CTkFont(family="Segoe UI", size=9), command=lambda tid=tarefa["id"], st=status: _mover_tarefa_ui(tid, st)).pack(side="left", padx=2)
 
 
 def _criar_tela_medicao(parent):
@@ -6081,6 +7600,46 @@ def _criar_tela_configuracoes(parent):
             font=ctk.CTkFont(family="Segoe UI", size=12),
             text_color=UI_THEME["text_secondary"],
         ).pack(anchor="w", padx=18, pady=(0, 16))
+    diag = _criar_card(tela, corner_radius=20)
+    diag.pack(fill="x", padx=18, pady=(0, 16))
+    ctk.CTkLabel(
+        diag,
+        text="Seguranca e diagnostico",
+        font=ctk.CTkFont(family="Segoe UI", size=18, weight="bold"),
+        text_color=UI_THEME["text_primary"],
+    ).pack(anchor="w", padx=18, pady=(14, 2))
+    ctk.CTkLabel(
+        diag,
+        text="Backups locais, restauracao e leitura dos ultimos logs do sistema.",
+        font=ctk.CTkFont(family="Segoe UI", size=11),
+        text_color=UI_THEME["text_secondary"],
+    ).pack(anchor="w", padx=18, pady=(0, 10))
+    diag_grid = ctk.CTkFrame(diag, fg_color="transparent")
+    diag_grid.pack(fill="x", padx=16, pady=(0, 16))
+    diag_grid.grid_columnconfigure((0, 1, 2, 3, 4, 5), weight=1)
+    diag_botoes = [
+        ("Backup agora", criar_backup_manual_ui, UI_THEME["accent"]),
+        ("Restaurar backup", _abrir_dialogo_restaurar_backup, "#D85B6A"),
+        ("Ver logs", _abrir_dialogo_logs, UI_THEME["surface_alt"]),
+        ("Pasta de backups", lambda: _abrir_pasta_no_explorer(_cfg.BACKUP_DIR), UI_THEME["surface_alt"]),
+        ("Busca global", _abrir_dialogo_busca_global, UI_THEME["surface_alt"]),
+        ("Consistencia", _abrir_dialogo_auditoria_consistencia, UI_THEME["surface_alt"]),
+    ]
+    for idx, (texto, comando, cor) in enumerate(diag_botoes):
+        destaque = cor not in {UI_THEME["surface_alt"], UI_THEME["surface"]}
+        ctk.CTkButton(
+            diag_grid,
+            text=texto,
+            height=38,
+            corner_radius=11,
+            fg_color=cor,
+            hover_color=UI_THEME["accent_hover"] if cor == UI_THEME["accent"] else ("#B94755" if cor == "#D85B6A" else UI_THEME["tab_hover"]),
+            border_width=0 if destaque else 1,
+            border_color=UI_THEME["border"],
+            text_color=UI_THEME["on_accent"] if destaque else UI_THEME["text_primary"],
+            font=ctk.CTkFont(family="Segoe UI", size=11, weight="bold"),
+            command=comando,
+        ).grid(row=0, column=idx, sticky="ew", padx=5)
     return tela
 
 
@@ -6254,15 +7813,21 @@ def construir_tela_principal():
     ui_refs["screen_host"] = screen_host
 
     dashboard_frame = _criar_tela_dashboard(screen_host)
+    hoje_frame = _criar_tela_hoje(screen_host)
     relatorios_frame = _criar_tela_relatorios(screen_host)
     alteracoes_frame = _criar_tela_alteracoes(screen_host)
+    seguros_frame = _criar_tela_seguros(screen_host)
+    tarefas_frame = _criar_tela_tarefas(screen_host)
     configuracoes_frame = _criar_tela_configuracoes(screen_host)
 
     medicao_frame = _criar_tela_medicao(screen_host)
 
     app.registrar_tela("dashboard", dashboard_frame)
+    app.registrar_tela("hoje", hoje_frame)
     app.registrar_tela("relatorios", relatorios_frame)
     app.registrar_tela("alteracoes", alteracoes_frame)
+    app.registrar_tela("seguros", seguros_frame)
+    app.registrar_tela("tarefas", tarefas_frame)
     app.registrar_tela("configuracoes", configuracoes_frame)
     app.registrar_tela("medicao", medicao_frame)
     app.mostrar_tela("dashboard")
@@ -6270,12 +7835,13 @@ def construir_tela_principal():
 
 construir_tela_principal()
 _register_doc_on_change(_agendar_atualizacao_painel_alteracoes)
+_register_doc_on_change(lambda: app.after(0, _recriar_tela_hoje))
 aplicar_tema_interface()
 
-# Ajusta a janela ao novo layout dashboard.
+# Mantém abertura previsível; telas largas podem ser acessadas pelo scroll e redimensionamento manual.
 app.update_idletasks()
-largura_ideal = min(max(1180, app.winfo_reqwidth()), largura_tela - 10)
-altura_ideal = min(max(760, app.winfo_reqheight()), altura_tela - 10)
+largura_ideal = min(1180, largura_tela - 10)
+altura_ideal = min(760, altura_tela - 10)
 centralizar_janela(app, largura_ideal, altura_ideal)
 
 app.after(120, atualizar_dashboard)

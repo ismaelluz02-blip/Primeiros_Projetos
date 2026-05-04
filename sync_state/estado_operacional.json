@@ -1,0 +1,65 @@
+{
+  "metadata": {
+    "schema_version": 1,
+    "exportado_em": "2026-05-03T22:07:16",
+    "formato": "estado_operacional_seguros_tarefas"
+  },
+  "seguros": [],
+  "seguro_controle_competencia": [],
+  "tarefas_categorias": [
+    {
+      "id": 1,
+      "nome": "Seguros",
+      "ativo": 1,
+      "data_cadastro": "2026-05-03 13:22:45"
+    },
+    {
+      "id": 2,
+      "nome": "Documentos",
+      "ativo": 1,
+      "data_cadastro": "2026-05-03 13:22:45"
+    },
+    {
+      "id": 3,
+      "nome": "Financeiro",
+      "ativo": 1,
+      "data_cadastro": "2026-05-03 13:22:45"
+    },
+    {
+      "id": 4,
+      "nome": "Operação",
+      "ativo": 1,
+      "data_cadastro": "2026-05-03 13:22:45"
+    },
+    {
+      "id": 5,
+      "nome": "Pessoal",
+      "ativo": 1,
+      "data_cadastro": "2026-05-03 13:22:45"
+    },
+    {
+      "id": 6,
+      "nome": "Outros",
+      "ativo": 1,
+      "data_cadastro": "2026-05-03 13:22:45"
+    }
+  ],
+  "tarefas": [
+    {
+      "id": 1,
+      "titulo": "Teste",
+      "descricao": "vsdvswgVVDSDVRER",
+      "categoria_id": 6,
+      "responsavel": "",
+      "data_criacao": "2026-05-03 13:23:43",
+      "prazo": "",
+      "prioridade": "URGENTE",
+      "status": "A_FAZER",
+      "ordem": 1,
+      "data_atualizacao": "2026-05-03 13:24:16",
+      "concluida_em": null,
+      "tags": "",
+      "excluida": 1
+    }
+  ]
+}

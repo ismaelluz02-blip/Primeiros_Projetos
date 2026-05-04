@@ -8,3 +8,4 @@ _dados_app/
 _tmp/
 tests/_tmp_medicao_pdf_audit/
 logs/
+backups/

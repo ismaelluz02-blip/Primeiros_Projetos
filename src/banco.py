@@ -197,6 +197,79 @@ def iniciar_banco():
                 )
                 """
             )
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS historico_alteracoes (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    data_hora TEXT NOT NULL,
+                    acao TEXT NOT NULL,
+                    tipo TEXT,
+                    numero INTEGER,
+                    numero_original TEXT,
+                    campo TEXT,
+                    valor_anterior TEXT,
+                    valor_novo TEXT,
+                    usuario TEXT,
+                    host TEXT
+                )
+                """
+            )
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS seguros (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    nome TEXT NOT NULL UNIQUE,
+                    ativo INTEGER NOT NULL DEFAULT 1,
+                    data_cadastro TEXT NOT NULL
+                )
+                """
+            )
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS seguro_controle_competencia (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    seguro_id INTEGER NOT NULL,
+                    competencia_mes INTEGER NOT NULL,
+                    competencia_ano INTEGER NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'PENDENTE',
+                    observacao TEXT,
+                    data_atualizacao TEXT NOT NULL,
+                    UNIQUE(seguro_id, competencia_mes, competencia_ano),
+                    FOREIGN KEY(seguro_id) REFERENCES seguros(id)
+                )
+                """
+            )
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS tarefas_categorias (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    nome TEXT NOT NULL UNIQUE,
+                    ativo INTEGER NOT NULL DEFAULT 1,
+                    data_cadastro TEXT NOT NULL
+                )
+                """
+            )
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS tarefas (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    titulo TEXT NOT NULL,
+                    descricao TEXT,
+                    categoria_id INTEGER,
+                    responsavel TEXT,
+                    data_criacao TEXT NOT NULL,
+                    prazo TEXT,
+                    prioridade TEXT NOT NULL DEFAULT 'MEDIA',
+                    status TEXT NOT NULL DEFAULT 'A_FAZER',
+                    ordem INTEGER NOT NULL DEFAULT 0,
+                    data_atualizacao TEXT NOT NULL,
+                    concluida_em TEXT,
+                    tags TEXT,
+                    excluida INTEGER NOT NULL DEFAULT 0,
+                    FOREIGN KEY(categoria_id) REFERENCES tarefas_categorias(id)
+                )
+                """
+            )
 
             colunas_existentes = {linha[1] for linha in cursor.execute("PRAGMA table_info(documentos)").fetchall()}
             if "valor_inicial_original" not in colunas_existentes:

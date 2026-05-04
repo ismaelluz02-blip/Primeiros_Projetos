@@ -13,6 +13,9 @@ Para receber notificações de mudança, use register_on_change():
 
 import re
 import sqlite3
+import getpass
+import socket
+from datetime import datetime
 
 from src.banco import obter_conexao_banco
 from src.utils import (
@@ -41,6 +44,34 @@ def _fire_on_change():
             fn()
         except Exception:
             pass
+
+
+def _registrar_historico_alteracao(cursor, acao, doc, campo, valor_anterior, valor_novo):
+    try:
+        cursor.execute(
+            """
+            INSERT INTO historico_alteracoes
+            (
+                data_hora, acao, tipo, numero, numero_original,
+                campo, valor_anterior, valor_novo, usuario, host
+            )
+            VALUES (?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                str(acao or "").strip(),
+                str(doc.get("tipo") or "").upper().strip(),
+                int(doc.get("numero") or 0),
+                str(doc.get("numero_original") or "").strip(),
+                str(campo or "").strip(),
+                "" if valor_anterior is None else str(valor_anterior),
+                "" if valor_novo is None else str(valor_novo),
+                getpass.getuser(),
+                socket.gethostname(),
+            ),
+        )
+    except sqlite3.Error:
+        pass
 
 
 # ─────────────────────────────────────────────
@@ -163,7 +194,7 @@ def _coletar_ids_documentos_para_frete(cursor, tipo, numero):
     placeholders = ",".join("?" for _ in ids_alvo)
     cursor.execute(
         f"""
-        SELECT id, frete, COALESCE(frete_manual,0) AS frete_manual
+        SELECT id, tipo, numero, numero_original, frete, COALESCE(frete_manual,0) AS frete_manual
              , COALESCE(frete_revisado_manual,0) AS frete_revisado_manual
         FROM documentos
         WHERE id IN ({placeholders})
@@ -173,6 +204,9 @@ def _coletar_ids_documentos_para_frete(cursor, tipo, numero):
     return [
         {
             "id": int(linha["id"]),
+            "tipo": str(linha["tipo"] or "").upper().strip(),
+            "numero": int(linha["numero"] or 0),
+            "numero_original": str(linha["numero_original"] or "").strip(),
             "frete": str(linha["frete"] or "").upper().strip(),
             "frete_manual": int(linha["frete_manual"] or 0),
             "frete_revisado_manual": int(linha["frete_revisado_manual"] or 0),
@@ -304,11 +338,18 @@ def alterar_competencia_documento(tipo, numero, mes_competencia, ano_competencia
         return 0
 
     placeholders = ",".join("?" for _ in ids_alvo)
+    cursor.execute(f"SELECT * FROM documentos WHERE id IN ({placeholders})", tuple(ids_alvo))
+    docs_antes = [dict(row) for row in cursor.fetchall()]
     cursor.execute(
         f"UPDATE documentos SET competencia=?, competencia_manual=1 WHERE id IN ({placeholders})",
         (competencia, *ids_alvo),
     )
     alterados = cursor.rowcount
+    for doc in docs_antes:
+        if str(doc.get("competencia") or "").strip().lower() != competencia:
+            _registrar_historico_alteracao(
+                cursor, "ALTERAR_COMPETENCIA", doc, "competencia", doc.get("competencia"), competencia
+            )
     conn.commit()
     conn.close()
     _fire_on_change()
@@ -322,6 +363,7 @@ def atualizar_modalidade_frete_documento(tipo, numero, nova_modalidade):
     tipo = str(tipo).upper().strip()
     modalidade_frete = _normalizar_modalidade_frete(nova_modalidade)
     frete_manual = 0 if modalidade_frete == "FRANQUIA" else 1
+    frete_revisado_manual = 0 if modalidade_frete == "FRANQUIA" else 1
     docs_alvo = _coletar_ids_documentos_para_frete(cursor, tipo, numero)
 
     if not docs_alvo:
@@ -343,14 +385,16 @@ def atualizar_modalidade_frete_documento(tipo, numero, nova_modalidade):
         if (
             frete_atual == modalidade_frete
             and frete_manual_atual == frete_manual
-            and frete_revisado_atual == 1
+            and frete_revisado_atual == frete_revisado_manual
         ):
             continue
         cursor.execute(
-            "UPDATE documentos SET frete=?, frete_manual=?, frete_revisado_manual=1 WHERE id=?",
-            (modalidade_frete, frete_manual, int(doc["id"])),
+            "UPDATE documentos SET frete=?, frete_manual=?, frete_revisado_manual=? WHERE id=?",
+            (modalidade_frete, frete_manual, frete_revisado_manual, int(doc["id"])),
         )
         alterados += cursor.rowcount
+        acao = "DESFAZER_FRETE" if modalidade_frete == "FRANQUIA" else f"DECLARAR_{modalidade_frete}"
+        _registrar_historico_alteracao(cursor, acao, doc, "frete", frete_atual, modalidade_frete)
 
     encontrados = len(docs_alvo)
     conn.commit()
@@ -420,12 +464,17 @@ def registrar_substituicao(tipo_antigo, numero_antigo, tipo_novo, numero_novo):
                 valor_inicial_original=COALESCE(valor_inicial_original, valor_inicial),
                 valor_final_original=COALESCE(valor_final_original, valor_final),
                 status_original=COALESCE(status_original, status),
-                valor_inicial=0, valor_final=0, status=?
+            valor_inicial=0, valor_final=0, status=?
             WHERE id IN ({placeholders_antigo})
             """,
             (status_antigo, *ids_antigo),
         )
         antigo_alterado = cursor.rowcount
+        cursor.execute(f"SELECT * FROM documentos WHERE id IN ({placeholders_antigo})", tuple(ids_antigo))
+        for doc in cursor.fetchall():
+            _registrar_historico_alteracao(
+                cursor, "SUBSTITUIR_DOCUMENTO", dict(doc), "status", dict(doc).get("status_original"), status_antigo
+            )
     else:
         antigo_alterado = 0
 
@@ -504,6 +553,12 @@ def cancelar_documento(tipo, numero):
         tuple(ids_alvo),
     )
     alterados = cursor.rowcount
+    cursor.execute(f"SELECT * FROM documentos WHERE id IN ({placeholders})", tuple(ids_alvo))
+    for doc in cursor.fetchall():
+        doc = dict(doc)
+        _registrar_historico_alteracao(
+            cursor, "CANCELAR_DOCUMENTO", doc, "status", doc.get("status_original"), "CANCELADO MANUALMENTE"
+        )
     conn.commit()
     conn.close()
     _fire_on_change()
@@ -534,6 +589,13 @@ def desfazer_cancelamento_documento(tipo, numero):
         tuple(ids_alvo),
     )
     alterados = cursor.rowcount
+    if alterados:
+        cursor.execute(f"SELECT * FROM documentos WHERE id IN ({placeholders})", tuple(ids_alvo))
+        for doc in cursor.fetchall():
+            doc = dict(doc)
+            _registrar_historico_alteracao(
+                cursor, "DESFAZER_CANCELAMENTO", doc, "status", "CANCELADO MANUALMENTE", doc.get("status")
+            )
     conn.commit()
     conn.close()
     _fire_on_change()
