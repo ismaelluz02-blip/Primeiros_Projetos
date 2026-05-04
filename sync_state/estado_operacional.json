@@ -1,7 +1,7 @@
 {
   "metadata": {
     "schema_version": 1,
-    "exportado_em": "2026-05-03T22:07:16",
+    "exportado_em": "2026-05-04T13:23:36",
     "formato": "estado_operacional_seguros_tarefas"
   },
   "seguros": [],
@@ -60,6 +60,70 @@
       "concluida_em": null,
       "tags": "",
       "excluida": 1
+    },
+    {
+      "id": 2,
+      "titulo": "Passivo operacional",
+      "descricao": "",
+      "categoria_id": 3,
+      "responsavel": "Ismael Luz",
+      "data_criacao": "2026-05-04 07:22:17",
+      "prazo": "",
+      "prioridade": "BAIXA",
+      "status": "AGUARDANDO",
+      "ordem": 1,
+      "data_atualizacao": "2026-05-04 07:22:17",
+      "concluida_em": null,
+      "tags": "",
+      "excluida": 0
+    },
+    {
+      "id": 3,
+      "titulo": "Nota de abastecimento",
+      "descricao": "",
+      "categoria_id": 3,
+      "responsavel": "Ismael Luz",
+      "data_criacao": "2026-05-04 07:23:08",
+      "prazo": "",
+      "prioridade": "MEDIA",
+      "status": "A_FAZER",
+      "ordem": 4,
+      "data_atualizacao": "2026-05-04 07:25:26",
+      "concluida_em": null,
+      "tags": "",
+      "excluida": 0
+    },
+    {
+      "id": 4,
+      "titulo": "Planilha de faturamento controladoria",
+      "descricao": "",
+      "categoria_id": 4,
+      "responsavel": "Ismael Luz",
+      "data_criacao": "2026-05-04 07:23:39",
+      "prazo": "",
+      "prioridade": "MEDIA",
+      "status": "A_FAZER",
+      "ordem": 2,
+      "data_atualizacao": "2026-05-04 07:23:39",
+      "concluida_em": null,
+      "tags": "",
+      "excluida": 0
+    },
+    {
+      "id": 5,
+      "titulo": "Documentos da medicao",
+      "descricao": "",
+      "categoria_id": 6,
+      "responsavel": "",
+      "data_criacao": "2026-05-04 07:23:56",
+      "prazo": "",
+      "prioridade": "ALTA",
+      "status": "A_FAZER",
+      "ordem": 5,
+      "data_atualizacao": "2026-05-04 07:46:17",
+      "concluida_em": null,
+      "tags": "",
+      "excluida": 0
     }
   ]
 }

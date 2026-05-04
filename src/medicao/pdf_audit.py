@@ -17,6 +17,7 @@ OCR_MAX_PAGES_PER_FILE = 8
 _AUDIT_CONTEXT = {
     "analyze_content": False,
     "enable_ocr": False,
+    "force_reprocess": False,
     "progress_cb": None,
     "stats": None,
 }
@@ -37,6 +38,8 @@ def pdf_content_enabled():
 def _new_stats():
     return {
         "mode": "profunda com OCR" if _ocr_enabled() else "profunda sem OCR" if pdf_content_enabled() else "rapida por nomes de arquivo",
+        "force_reprocess": bool(_AUDIT_CONTEXT.get("force_reprocess")),
+        "ocr_scope": "todas as paginas analisadas" if _AUDIT_CONTEXT.get("force_reprocess") else f"ate {OCR_MAX_PAGES_PER_FILE} paginas por PDF",
         "pdf_files": 0,
         "analyzed_files": 0,
         "cache_hits": 0,
@@ -52,9 +55,10 @@ def _new_stats():
     }
 
 
-def configure_pdf_audit(enable_ocr=False, analyze_content=False, progress_cb=None):
+def configure_pdf_audit(enable_ocr=False, analyze_content=False, progress_cb=None, force_reprocess=False):
     _AUDIT_CONTEXT["analyze_content"] = bool(analyze_content or enable_ocr)
     _AUDIT_CONTEXT["enable_ocr"] = bool(enable_ocr)
+    _AUDIT_CONTEXT["force_reprocess"] = bool(force_reprocess)
     _AUDIT_CONTEXT["progress_cb"] = progress_cb
     _AUDIT_CONTEXT["stats"] = _new_stats()
 
@@ -95,9 +99,9 @@ DOCUMENT_RULES = {
     },
     "VT_DECLARACAO": {
         "name": "Termo de Vale Transporte",
-        "strong": ["vale transporte", "termo de opcao", "opcao pelo vale transporte"],
-        "medium": ["deslocamento residencia trabalho", "renuncia ao vale transporte", "transporte coletivo"],
-        "weak": ["desconto de 6", "declaracao de utilizacao", "deslocamento"],
+        "strong": ["vale transporte", "vale-transporte", "termo de opcao", "termo de opcao de vale transporte", "opcao pelo vale transporte"],
+        "medium": ["deslocamento residencia trabalho", "renuncia ao vale transporte", "transporte coletivo", "utilizacao do vale transporte", "utilizacao do vale-transporte", "nao opto pela utilizacao"],
+        "weak": ["desconto de 6", "declaracao de utilizacao", "deslocamento", "beneficio do vale transporte"],
         "exclude": [],
     },
     "EPI": {
@@ -154,6 +158,20 @@ DOCUMENT_RULES = {
         "strong": ["recibo"],
         "medium": ["recebi", "valor de", "pagamento", "referente a"],
         "weak": ["assinatura"],
+        "exclude": [],
+    },
+    "RECIBO_FERIAS": {
+        "name": "Recibo de férias",
+        "strong": ["recibo de ferias", "recibo de férias"],
+        "medium": ["ferias", "férias", "gozo de ferias", "abono pecuniario", "um terco constitucional", "1/3 constitucional"],
+        "weak": ["recebi", "pagamento", "assinatura"],
+        "exclude": [],
+    },
+    "COMPROVANTE_FERIAS": {
+        "name": "Comprovante de pagamento de férias",
+        "strong": ["comprovante de pagamento", "liquidacao", "liquidação", "transferencia", "pix"],
+        "medium": ["ferias", "férias", "credito", "valor pago", "favorecido", "beneficiario"],
+        "weak": ["banco", "agencia", "conta", "autenticacao"],
         "exclude": [],
     },
     "ACORDO_COMPENSACAO": {
@@ -477,7 +495,8 @@ def analyze_pdf_file(pdf_path, use_cache=True):
     pdf_path = os.path.abspath(pdf_path)
     stats = _stats()
     stats["pdf_files"] += 1
-    cache = _load_cache() if use_cache else {}
+    read_cache = bool(use_cache and not _AUDIT_CONTEXT.get("force_reprocess"))
+    cache = _load_cache() if read_cache or use_cache else {}
     try:
         file_size = os.path.getsize(pdf_path)
         if file_size > PDF_AUDIT_MAX_BYTES:
@@ -497,7 +516,7 @@ def analyze_pdf_file(pdf_path, use_cache=True):
 
     cached = cache.get(pdf_path)
     mode = "ocr" if _ocr_enabled() else "safe"
-    if cached and cached.get("hash") == file_hash and cached.get("mode") == mode:
+    if read_cache and cached and cached.get("hash") == file_hash and cached.get("mode") == mode:
         stats["cache_hits"] += 1
         _progress(f"Reutilizando cache: {os.path.basename(pdf_path)}")
         cached_result = cached["result"]
@@ -542,7 +561,7 @@ def analyze_pdf_file(pdf_path, use_cache=True):
             if idx > PDF_AUDIT_MAX_PAGES:
                 break
             _progress(f"Processando {os.path.basename(pdf_path)} pagina {idx}/{len(doc)}")
-            allow_ocr = _ocr_enabled() and ocr_pages_used < OCR_MAX_PAGES_PER_FILE
+            allow_ocr = _ocr_enabled() and (_AUDIT_CONTEXT.get("force_reprocess") or ocr_pages_used < OCR_MAX_PAGES_PER_FILE)
             page_data = _extract_page_text(page, allow_ocr=allow_ocr)
             stats["pages_processed"] += 1
             method = page_data.get("extractionMethod")
@@ -605,6 +624,9 @@ def evidence_note(evidence):
     method = evidence.get("method") or "conteúdo"
     confidence = evidence.get("confidence") or "media"
     file_name = evidence.get("fileName") or ""
+    file_path = evidence.get("filePath") or ""
+    if file_path:
+        file_name = f"{file_name} | caminho: {file_path}"
     keys = ", ".join(evidence.get("matchedKeywords", [])[:4])
     suffix = f" | evidências: {keys}" if keys else ""
     return f"Encontrado em {file_name}, {page_txt}, via {method}, confiança {confidence}{suffix}"
